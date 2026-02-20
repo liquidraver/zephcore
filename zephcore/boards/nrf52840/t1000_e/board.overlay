@@ -1,0 +1,55 @@
+/*
+ * T1000-E board overlay - additional ZephCore-specific configuration
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * GPS control pins for Airoha AG3335 GNSS module (matches Arduino target.cpp):
+ * - GPS_EN (P1.11) - Main power enable
+ * - GPS_VRTC_EN (P0.8) - RTC voltage regulator (critical!)
+ * - GPS_RESET (P1.15) - Reset control
+ * - GPS_SLEEP_INT (P1.12) - Sleep interrupt
+ */
+
+/ {
+	/* GPS power enable pin - P1.11 */
+	gps_en: gps-enable {
+		compatible = "gpio-leds";
+		gps_enable_pin: gps_enable {
+			gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+			label = "GPS Enable";
+		};
+	};
+
+	/* GPS RTC voltage regulator enable - P0.8 (critical for GPS operation) */
+	gps_vrtc: gps-vrtc-enable {
+		compatible = "gpio-leds";
+		gps_vrtc_pin: gps_vrtc {
+			gpios = <&gpio0 8 GPIO_ACTIVE_HIGH>;
+			label = "GPS VRTC Enable";
+		};
+	};
+
+	/* GPS reset control - P1.15 */
+	gps_rst: gps-reset {
+		compatible = "gpio-leds";
+		gps_reset_pin: gps_reset {
+			gpios = <&gpio1 15 GPIO_ACTIVE_HIGH>;
+			label = "GPS Reset";
+		};
+	};
+
+	/* GPS sleep interrupt - P1.12 */
+	gps_sleep: gps-sleep-int {
+		compatible = "gpio-leds";
+		gps_sleep_pin: gps_sleep {
+			gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>;
+			label = "GPS Sleep Int";
+		};
+	};
+
+	aliases {
+		gps-enable = &gps_enable_pin;
+		gps-vrtc-enable = &gps_vrtc_pin;
+		gps-reset = &gps_reset_pin;
+		gps-sleep-int = &gps_sleep_pin;
+	};
+};

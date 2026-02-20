@@ -1,0 +1,61 @@
+/*
+ * RAK4631 formatter overlay — flash partitions + USB console only.
+ * Strips all sensor/GPS/radio nodes from the main board overlay
+ * to avoid driver init hangs in the minimal formatter environment.
+ */
+
+/delete-node/ &boot_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+/delete-node/ &storage_partition;
+
+/ {
+	chosen {
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+		zephyr,settings-partition = &storage_partition;
+	};
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/* Disable QSPI — RAK19003 Mini Base has no QSPI flash */
+&qspi {
+	status = "disabled";
+};
+
+&flash0 {
+	partitions {
+		boot_partition: partition@0 {
+			label = "softdevice";
+			read-only;
+			reg = <0x00000000 0x00026000>;
+		};
+
+		code_partition: partition@26000 {
+			label = "Application";
+			reg = <0x00026000 0x000AE000>;
+		};
+
+		storage_partition: partition@d4000 {
+			label = "storage";
+			reg = <0x000D4000 0x00002000>;
+		};
+
+		lfs_partition: partition@d6000 {
+			label = "lfs";
+			reg = <0x000D6000 0x0001E000>;
+		};
+
+		uf2_partition: partition@f4000 {
+			label = "UF2";
+			read-only;
+			reg = <0x000F4000 0x0000C000>;
+		};
+	};
+};

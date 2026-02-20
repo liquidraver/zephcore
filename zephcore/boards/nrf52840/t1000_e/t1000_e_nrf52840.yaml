@@ -1,0 +1,20 @@
+identifier: t1000_e
+name: Seeed Tracker T1000-E
+type: mcu
+arch: arm
+ram: 256
+flash: 1024
+toolchain:
+  - zephyr
+  - gnuarmemb
+  - xtools
+supported:
+  - adc
+  - ble
+  - gpio
+  - i2c
+  - nvs
+  - spi
+  - usb_device
+  - watchdog
+vendor: seeed

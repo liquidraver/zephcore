@@ -1,0 +1,99 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * XIAO MG24 + Wio-SX1262 LoRa
+ *
+ * Pin mapping (XIAO MG24 connector → Wio-SX1262):
+ * - D1 (PC01)  = DIO1    - D8  (PA03)  = SPI SCK  (eusart0)
+ * - D2 (PC02)  = RESET   - D9  (PA04)  = SPI MISO (eusart0)
+ * - D3 (PC03)  = BUSY    - D10 (PA05)  = SPI MOSI (eusart0)
+ * - D4 (PC04)  = NSS
+ * - D5 (PC05)  = RXEN
+ *
+ * Console: USART0 (PA08 TX, PA09 RX)
+ *
+ * WARNING: Default I2C0 uses PC4/PC5 (D4/D5) — must be disabled for LoRa!
+ */
+
+/ {
+	aliases {
+		lora0 = &lora;
+	};
+
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+	};
+};
+
+/* Disable I2C0 — default pins PC4(SCL)/PC5(SDA) conflict with NSS/RXEN */
+&i2c0 {
+	status = "disabled";
+};
+
+/* SX1262 on eusart0 (XIAO SPI bus — SCK/MISO/MOSI already in pinctrl) */
+&eusart0 {
+	status = "okay";
+	cs-gpios = <&gpioc 4 GPIO_ACTIVE_LOW>;  /* D4 = PC04 NSS (override default PC07) */
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		/* LoRa control pins */
+		reset-gpios = <&gpioc 2 GPIO_ACTIVE_LOW>;   /* D2 = PC02 */
+		busy-gpios = <&gpioc 3 GPIO_ACTIVE_HIGH>;   /* D3 = PC03 */
+		dio1-gpios = <&gpioc 1 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;  /* D1 = PC01 */
+
+		/* RF switch: RXEN for RX, DIO2 drives TX enable */
+		rx-enable-gpios = <&gpioc 5 GPIO_ACTIVE_HIGH>;  /* D5 = PC05 RXEN */
+		dio2-tx-enable;
+
+		/* TCXO 1.8V via DIO3 (SX126X_DIO3_TCXO_1V8 = 0x02) */
+		dio3-tcxo-voltage = <2>;
+		tcxo-power-startup-delay-ms = <10>;
+
+		/* RX boosted mode for better sensitivity */
+		rx-boosted;
+	};
+};
+
+/*
+ * Flash partitions — repartition for ZephCore
+ * Total flash: 1536KB (0x180000), erase block = 8KB
+ *
+ * Default: boot(48KB) + slot0(736KB) + slot1(736KB) + storage(16KB) = 1536KB
+ * New layout (no MCUboot DFU for companion device):
+ *
+ * 0x00000 - 0x0C000   (48KB)   MCUboot (reserved)
+ * 0x0C000 - 0x15C000  (1344KB) Application (slot0 — expanded into slot1 space)
+ * 0x15C000 - 0x160000 (16KB)   NVS storage (BLE bonds) — 2 sectors × 8KB
+ * 0x160000 - 0x180000 (128KB)  LittleFS (identity, contacts, channels)
+ */
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+/delete-node/ &storage_partition;
+
+&flash0 {
+	partitions {
+		/* Application — expanded to use slot1 space */
+		slot0_partition: partition@c000 {
+			label = "image-0";
+			reg = <0x0C000 0x150000>;  /* 1344KB */
+		};
+
+		/* NVS 16KB for BLE bonds + settings (2 × 8KB sectors) */
+		storage_partition: partition@15c000 {
+			label = "storage";
+			reg = <0x15C000 0x4000>;
+		};
+
+		/* LittleFS 128KB for DataStore */
+		lfs_partition: partition@160000 {
+			label = "lfs";
+			reg = <0x160000 0x20000>;
+		};
+	};
+};
+
+/* LittleFS auto-mount — standard /lfs mount point */
+#include "../../common/filesystem.dtsi"

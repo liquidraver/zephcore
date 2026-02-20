@@ -1,0 +1,20 @@
+identifier: wio_tracker_l1/nrf52840
+name: Seeed Wio Tracker L1
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+  - xtools
+ram: 256
+flash: 1024
+supported:
+  - adc
+  - ble
+  - gpio
+  - i2c
+  - spi
+  - usb_device
+  - qspi
+  - lora
+vendor: seeed

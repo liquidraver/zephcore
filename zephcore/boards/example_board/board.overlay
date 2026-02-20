@@ -1,0 +1,720 @@
+/*
+ * ============================================================================
+ *  ZephCore — Universal board.overlay Template
+ * ============================================================================
+ *
+ *  This overlay adds ZephCore-specific nodes ON TOP of an existing Zephyr
+ *  board definition. Use this when your board already exists in Zephyr's tree
+ *  (e.g., xiao_nrf54l15, xiao_mg24, xiao_esp32c3, rak4631).
+ *
+ *  If you're creating a FULLY CUSTOM board (no upstream Zephyr DTS), look at
+ *  boards/nrf52840/ikoka_nano_30dbm/ as a reference — it includes a complete
+ *  .dts, pinctrl, Kconfig, and board.cmake.
+ *
+ *  ┌──────────────────────────────────────────────────────────────────────┐
+ *  │  WHAT THIS FILE DOES                                                │
+ *  │                                                                     │
+ *  │  1. Adds LoRa radio on the board's SPI bus                         │
+ *  │  2. Sets flash partitions for NVS + LittleFS                       │
+ *  │  3. Optionally disables conflicting peripherals                    │
+ *  │  4. Adds aliases and chosen nodes for ZephCore                     │
+ *  │                                                                     │
+ *  │  PLATFORM DIFFERENCES (see each section):                          │
+ *  │                                                                     │
+ *  │  │ Feature      │ nRF52840   │ nRF54L15  │ MG24      │ ESP32     │ │
+ *  │  │──────────────│────────────│───────────│───────────│───────────│ │
+ *  │  │ SPI bus      │ &spi1      │ &spi00    │ &eusart0  │ &spi2     │ │
+ *  │  │ GPIO prefix  │ &gpio0/1   │ &gpio1/2  │ &gpioa-d  │ &gpio0    │ │
+ *  │  │ Flash node   │ &flash0    │ cpuapp_rram│ &flash0  │ &flash0   │ │
+ *  │  │ Erase block  │ 4KB        │ 4KB       │ 8KB       │ 4KB       │ │
+ *  │  │ Console      │ USB CDC    │ &uart20*  │ &usart0*  │ usb_serial│ │
+ *  │  │ Pinctrl      │ NRF_PSEL() │ NRF_PSEL()│ in DTS    │ in DTS    │ │
+ *  │  │ Boot region  │ SoftDevice │ MCUboot   │ MCUboot   │ image hdr │ │
+ *  │  │                                                                  │
+ *  │  * = already set in Zephyr's board DTS, no override needed         │
+ *  └──────────────────────────────────────────────────────────────────────┘
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+
+/* ==================================================================
+ * SECTION 1: ALIASES AND CHOSEN (REQUIRED)
+ *
+ * Every board MUST define:
+ *   lora0 alias      — points to LoRa radio node (required)
+ *   settings-partition — NVS for BLE bonds (required)
+ *
+ * Console is ONLY needed if the board doesn't already set it:
+ *   nRF52840: needs zephyr,console = &cdc_acm_uart (USB CDC)
+ *   nRF54L15: already set to &uart20 in board DTS — skip
+ *   MG24:     already set to &usart0 in board DTS — skip
+ *   ESP32:    needs zephyr,console = &usb_serial
+ * ================================================================== */
+/ {
+	aliases {
+		lora0 = &lora;
+
+		/* Optional aliases (uncomment if your board has these):
+		 * led0     = &user_led;       heartbeat LED
+		 * sw0      = &user_button;    primary button
+		 * buzzer   = &buzzer;         PWM buzzer
+		 * gps-enable = &gps_enable;   GPS power control
+		 */
+	};
+
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+
+		/* --- Console (only if board DTS doesn't already set it) ---
+		 *
+		 * nRF52840 (USB CDC):
+		 *   zephyr,console = &cdc_acm_uart;
+		 *   zephyr,shell-uart = &cdc_acm_uart;
+		 *   zephyr,code-partition = &slot0_partition;
+		 *
+		 * ESP32 (USB Serial/JTAG):
+		 *   zephyr,console = &usb_serial;
+		 *   zephyr,shell-uart = &usb_serial;
+		 *
+		 * nRF54L15: skip (uart20 already set)
+		 * MG24:     skip (usart0 already set)
+		 */
+
+		/* --- Display (uncomment if board has OLED/LCD) ---
+		 * zephyr,display = &oled;
+		 */
+	};
+};
+
+
+/* ==================================================================
+ * SECTION 2: PERIPHERAL CONFLICTS (platform-specific)
+ *
+ * Many XIAO boards have I2C default pins that conflict with LoRa
+ * control signals. You MUST disable the conflicting peripheral.
+ *
+ * Check your board's DTS for I2C pin assignments and compare with
+ * your LoRa wiring. Common conflicts:
+ *
+ *   Board          │ Conflict             │ Fix
+ *   ───────────────│──────────────────────│────────────────────
+ *   XIAO nRF54L15 │ i2c22 on P1.10/P1.11│ Disable &i2c22
+ *   XIAO MG24     │ i2c0 on PC4/PC5     │ Disable &i2c0
+ *   XIAO ESP32-C3 │ (none)              │ No action needed
+ *   XIAO nRF52840 │ (none)              │ No action needed
+ *   RAK4631       │ (none)              │ No action needed
+ * ================================================================== */
+
+/* --- nRF54L15 example: disable I2C that conflicts with NSS/RXEN ---
+ *
+ * &i2c22 {
+ *     status = "disabled";
+ * };
+ */
+
+/* --- MG24 example: disable I2C that conflicts with NSS/RXEN ---
+ *
+ * &i2c0 {
+ *     status = "disabled";
+ * };
+ */
+
+
+/* ==================================================================
+ * SECTION 3: LORA RADIO ON SPI (REQUIRED)
+ *
+ * This is the most important section — without it, no mesh.
+ *
+ * Pick your SPI bus based on platform:
+ *   nRF52840:  &spi1 (or &spi2, &spi3 — avoid &spi0 if using I2C0)
+ *   nRF54L15:  &spi00 (XIAO SPI bus, pinctrl already set)
+ *   MG24:      &eusart0 (XIAO SPI bus, pinctrl already set)
+ *   ESP32-C3:  &spi2
+ *   ESP32-C6:  &spi2
+ *
+ * GPIO syntax differs per MCU:
+ *   nRF52840:  <&gpio0 PIN FLAGS> or <&gpio1 PIN FLAGS>
+ *   nRF54L15:  <&gpio1 PIN FLAGS> or <&gpio2 PIN FLAGS>
+ *   MG24:      <&gpioa PIN FLAGS>, <&gpioc PIN FLAGS>, etc.
+ *   ESP32:     <&gpio0 PIN FLAGS>
+ *
+ * SX1262 pin connections:
+ *   cs-gpios     — SPI chip select (NSS), ACTIVE_LOW
+ *   reset-gpios  — Radio reset, ACTIVE_LOW
+ *   busy-gpios   — Busy indicator, ACTIVE_HIGH
+ *   dio1-gpios   — Interrupt (RX/TX done), ACTIVE_HIGH with PULL_DOWN
+ *
+ * RF switch (pick what your module needs):
+ *   dio2-tx-enable           — DIO2 controls TX (most modules)
+ *   rx-enable-gpios          — Separate RXEN pin (Wio-SX1262 needs both)
+ *
+ * TCXO (if your module has one):
+ *   dio3-tcxo-voltage        — DIO3 provides TCXO power
+ *   Values: 0=1.6V, 1=1.7V, 2=1.8V, 3=2.2V, 4=2.4V, 5=2.7V, 6=3.0V, 7=3.3V
+ *   Or use named constants from sx126x.h:
+ *     SX126X_DIO3_TCXO_1V6 .. SX126X_DIO3_TCXO_3V3
+ *
+ * rx-boosted                — Better RX sensitivity (slight power increase)
+ *
+ * CHANGE ALL PINS to match your board!
+ *
+ * ================================================================== */
+
+/* ┌─────────────────────────────────────────┐
+ * │ EXAMPLE A: nRF52840 — custom SPI pins   │
+ * │ (pinctrl defined in separate .dtsi)     │
+ * └─────────────────────────────────────────┘
+ *
+ * &spi1 {
+ *     compatible = "nordic,nrf-spim";
+ *     status = "okay";
+ *     cs-gpios = <&gpio0 24 GPIO_ACTIVE_LOW>;
+ *     pinctrl-0 = <&spi1_default>;
+ *     pinctrl-1 = <&spi1_sleep>;
+ *     pinctrl-names = "default", "sleep";
+ *
+ *     lora: lora@0 {
+ *         compatible = "semtech,sx1262";
+ *         reg = <0>;
+ *         spi-max-frequency = <8000000>;
+ *         reset-gpios = <&gpio1 7 GPIO_ACTIVE_LOW>;
+ *         busy-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
+ *         dio1-gpios = <&gpio0 7 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+ *         dio2-tx-enable;
+ *         dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+ *         tcxo-power-startup-delay-ms = <5>;
+ *     };
+ * };
+ */
+
+/* ┌─────────────────────────────────────────┐
+ * │ EXAMPLE B: nRF54L15 (XIAO) — spi00     │
+ * │ SCK/MISO/MOSI already in board pinctrl  │
+ * └─────────────────────────────────────────┘
+ *
+ * &spi00 {
+ *     cs-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
+ *
+ *     lora: lora@0 {
+ *         compatible = "semtech,sx1262";
+ *         reg = <0>;
+ *         spi-max-frequency = <8000000>;
+ *         reset-gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;
+ *         busy-gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>;
+ *         dio1-gpios = <&gpio1 5 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+ *         rx-enable-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+ *         dio2-tx-enable;
+ *         dio3-tcxo-voltage = <6>;
+ *         tcxo-power-startup-delay-ms = <10>;
+ *         rx-boosted;
+ *     };
+ * };
+ */
+
+/* ┌─────────────────────────────────────────┐
+ * │ EXAMPLE C: MG24 (XIAO) — eusart0       │
+ * │ SCK/MISO/MOSI already in board pinctrl  │
+ * │ Default CS is PC7 — override to PC4     │
+ * └─────────────────────────────────────────┘
+ *
+ * &eusart0 {
+ *     status = "okay";
+ *     cs-gpios = <&gpioc 4 GPIO_ACTIVE_LOW>;
+ *
+ *     lora: lora@0 {
+ *         compatible = "semtech,sx1262";
+ *         reg = <0>;
+ *         spi-max-frequency = <8000000>;
+ *         reset-gpios = <&gpioc 2 GPIO_ACTIVE_LOW>;
+ *         busy-gpios = <&gpioc 3 GPIO_ACTIVE_HIGH>;
+ *         dio1-gpios = <&gpioc 1 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+ *         rx-enable-gpios = <&gpioc 5 GPIO_ACTIVE_HIGH>;
+ *         dio2-tx-enable;
+ *         dio3-tcxo-voltage = <6>;
+ *         tcxo-power-startup-delay-ms = <10>;
+ *         rx-boosted;
+ *     };
+ * };
+ */
+
+/* ┌─────────────────────────────────────────┐
+ * │ EXAMPLE D: ESP32-C3/C6 — spi2          │
+ * │ SCK/MISO/MOSI already in board pinctrl  │
+ * └─────────────────────────────────────────┘
+ *
+ * &spi2 {
+ *     cs-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+ *
+ *     lora: lora@0 {
+ *         compatible = "semtech,sx1262";
+ *         reg = <0>;
+ *         spi-max-frequency = <8000000>;
+ *         reset-gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
+ *         busy-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+ *         dio1-gpios = <&gpio0 3 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+ *         rx-enable-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
+ *         dio2-tx-enable;
+ *         dio3-tcxo-voltage = <6>;
+ *         tcxo-power-startup-delay-ms = <10>;
+ *         rx-boosted;
+ *     };
+ * };
+ */
+
+
+/* ==================================================================
+ * SECTION 4: FLASH PARTITIONS (REQUIRED)
+ *
+ * ZephCore needs three partitions:
+ *   slot0_partition  — Application code
+ *   storage_partition — NVS for BLE bonds + settings
+ *   lfs_partition     — LittleFS for identity, contacts, channels
+ *
+ * Most boards also have a boot region (SoftDevice, MCUboot, or image
+ * header) that should NOT be touched.
+ *
+ * CRITICAL: Erase block size determines minimum NVS size:
+ *   4KB erase (nRF52, nRF54L, ESP32): 2 × 4KB = 8KB minimum
+ *   8KB erase (MG24):                  2 × 8KB = 16KB minimum
+ *
+ * General approach:
+ *   1. Delete default partitions (slot0, slot1, storage)
+ *   2. Expand slot0 into slot1 space (no DFU for companion device)
+ *   3. Add NVS + LittleFS at the end
+ *
+ * ================================================================== */
+
+/* ┌─────────────────────────────────────────────────────────────────────┐
+ * │ EXAMPLE A: nRF52840 (1MB flash, 4KB erase, SoftDevice + UF2)      │
+ * │                                                                     │
+ * │ CRITICAL: You MUST match the SoftDevice version that your board's  │
+ * │ bootloader was flashed with. Getting this wrong means the app is   │
+ * │ placed at the wrong address and the board will bootloop / brick.   │
+ * │                                                                     │
+ * │ Check the Arduino variant's platformio.ini for your board:         │
+ * │   s140_v6 linker script → app starts at 0x26000 (SD is 152KB)     │
+ * │   s140_v7 linker script → app starts at 0x27000 (SD is 156KB)     │
+ * │                                                                     │
+ * │ The bootloader address also varies. Parse the bootloader hex to    │
+ * │ find it (highest address region), or read UICR 0x10001014 via      │
+ * │ J-Link. Common values: 0xF4000 (v6 boards), 0xED000 (v7 boards).  │
+ * │                                                                     │
+ * │ s140 v6 boards (app@0x26000):                                      │
+ * │   RAK4631, heltec_t114, heltec_mesh_solar, lilygo_techo,          │
+ * │   lilygo_techo_lite, mesh_pocket, meshtiny, nano_g2_ultra,         │
+ * │   promicro, rak3401, rak_wismesh_tag, keepteen_lt1,                │
+ * │   thinknode_m1/m3/m6                                               │
+ * │                                                                     │
+ * │ s140 v7 boards (app@0x27000):                                      │
+ * │   xiao_nrf52, wio_wm1110, wio-tracker-l1, wio-tracker-l1-eink,    │
+ * │   sensecap_solar, t1000-e, minewsemi_me25ls01,                     │
+ * │   ikoka_nano_nrf, ikoka_stick_nrf, ikoka_handheld_nrf              │
+ * │                                                                     │
+ * │ Example: s140 v6 (RAK4631, bootloader@0xF4000):                   │
+ * │ 0x00000 - 0x26000  (152KB)  SoftDevice s140 v6.1.1 (reserved)     │
+ * │ 0x26000 - 0xD4000  (696KB)  Application                           │
+ * │ 0xD4000 - 0xD6000  (8KB)    NVS (2 × 4KB)                        │
+ * │ 0xD6000 - 0xF4000  (120KB)  LittleFS                              │
+ * │ 0xF4000 - 0x100000 (48KB)   UF2 bootloader (reserved)             │
+ * │                                                                     │
+ * │ Example: s140 v7 (xiao_nrf52, bootloader@0xED000):                │
+ * │ 0x00000 - 0x27000  (156KB)  SoftDevice s140 v7.3.0 (reserved)     │
+ * │ 0x27000 - 0xD4000  (692KB)  Application                           │
+ * │ 0xD4000 - 0xD6000  (8KB)    NVS (2 × 4KB)                        │
+ * │ 0xD6000 - 0xED000  (92KB)   LittleFS                              │
+ * │ 0xED000 - 0x100000 (76KB)   UF2 bootloader (reserved)             │
+ * └─────────────────────────────────────────────────────────────────────┘
+ *
+ * /delete-node/ &boot_partition;
+ * /delete-node/ &slot0_partition;
+ * /delete-node/ &slot1_partition;
+ * /delete-node/ &storage_partition;
+ *
+ * --- s140 v6 variant (app@0x26000) ---
+ *
+ * &flash0 {
+ *     partitions {
+ *         compatible = "fixed-partitions";
+ *         #address-cells = <1>;
+ *         #size-cells = <1>;
+ *
+ *         boot_partition: partition@0 {
+ *             label = "softdevice";
+ *             read-only;
+ *             reg = <0x00000 0x26000>;
+ *         };
+ *         slot0_partition: partition@26000 {
+ *             label = "Application";
+ *             reg = <0x26000 0xAE000>;
+ *         };
+ *         storage_partition: partition@d4000 {
+ *             label = "storage";
+ *             reg = <0xD4000 0x2000>;
+ *         };
+ *         lfs_partition: partition@d6000 {
+ *             label = "lfs";
+ *             reg = <0xD6000 0x1E000>;
+ *         };
+ *         uf2_partition: partition@f4000 {
+ *             label = "UF2";
+ *             read-only;
+ *             reg = <0xF4000 0xC000>;
+ *         };
+ *     };
+ * };
+ *
+ * --- s140 v7 variant (app@0x27000) ---
+ *
+ * &flash0 {
+ *     partitions {
+ *         compatible = "fixed-partitions";
+ *         #address-cells = <1>;
+ *         #size-cells = <1>;
+ *
+ *         boot_partition: partition@0 {
+ *             label = "softdevice";
+ *             read-only;
+ *             reg = <0x00000 0x27000>;
+ *         };
+ *         slot0_partition: partition@27000 {
+ *             label = "Application";
+ *             reg = <0x27000 0xAD000>;
+ *         };
+ *         storage_partition: partition@d4000 {
+ *             label = "storage";
+ *             reg = <0xD4000 0x2000>;
+ *         };
+ *         lfs_partition: partition@d6000 {
+ *             label = "lfs";
+ *             reg = <0xD6000 0x17000>;
+ *         };
+ *         uf2_partition: partition@ed000 {
+ *             label = "UF2";
+ *             read-only;
+ *             reg = <0xED000 0x13000>;
+ *         };
+ *     };
+ * };
+ */
+
+/* ┌─────────────────────────────────────────────────────────────────────┐
+ * │ EXAMPLE B: nRF54L15 (1428KB RRAM, 4KB erase, MCUboot reserved)    │
+ * │                                                                     │
+ * │ 0x00000 - 0x10000   (64KB)   MCUboot (reserved)                   │
+ * │ 0x10000 - 0x14E000  (1272KB) Application                          │
+ * │ 0x14E000 - 0x150000 (8KB)    NVS (2 × 4KB)                       │
+ * │ 0x150000 - 0x165000 (84KB)   LittleFS                             │
+ * │                                                                     │
+ * │ NOTE: nRF54L uses RRAM not flash — node is &cpuapp_rram            │
+ * └─────────────────────────────────────────────────────────────────────┘
+ *
+ * /delete-node/ &slot0_partition;
+ * /delete-node/ &slot1_partition;
+ * /delete-node/ &storage_partition;
+ *
+ * &cpuapp_rram {
+ *     partitions {
+ *         slot0_partition: partition@10000 {
+ *             label = "image-0";
+ *             reg = <0x10000 0x13E000>;
+ *         };
+ *         storage_partition: partition@14e000 {
+ *             label = "storage";
+ *             reg = <0x14E000 0x2000>;
+ *         };
+ *         lfs_partition: partition@150000 {
+ *             label = "lfs";
+ *             reg = <0x150000 0x15000>;
+ *         };
+ *     };
+ * };
+ */
+
+/* ┌─────────────────────────────────────────────────────────────────────┐
+ * │ EXAMPLE C: MG24 (1536KB flash, 8KB erase, MCUboot reserved)       │
+ * │                                                                     │
+ * │ 0x00000 - 0x0C000   (48KB)   MCUboot (reserved)                   │
+ * │ 0x0C000 - 0x15C000  (1344KB) Application                          │
+ * │ 0x15C000 - 0x160000 (16KB)   NVS (2 × 8KB — MG24 has 8KB erase!) │
+ * │ 0x160000 - 0x180000 (128KB)  LittleFS                             │
+ * └─────────────────────────────────────────────────────────────────────┘
+ *
+ * /delete-node/ &slot0_partition;
+ * /delete-node/ &slot1_partition;
+ * /delete-node/ &storage_partition;
+ *
+ * &flash0 {
+ *     partitions {
+ *         slot0_partition: partition@c000 {
+ *             label = "image-0";
+ *             reg = <0x0C000 0x150000>;
+ *         };
+ *         storage_partition: partition@15c000 {
+ *             label = "storage";
+ *             reg = <0x15C000 0x4000>;
+ *         };
+ *         lfs_partition: partition@160000 {
+ *             label = "lfs";
+ *             reg = <0x160000 0x20000>;
+ *         };
+ *     };
+ * };
+ */
+
+/* ┌─────────────────────────────────────────────────────────────────────┐
+ * │ EXAMPLE D: ESP32 (4MB flash, 4KB erase, simple boot at 0x0)       │
+ * │                                                                     │
+ * │ Default layout already has large storage_partition at end.          │
+ * │ We just split it into NVS + LittleFS:                              │
+ * │                                                                     │
+ * │ 0x3B0000 - 0x3B2000 (8KB)    NVS (2 × 4KB)                       │
+ * │ 0x3B2000 - 0x3E0000 (184KB)  LittleFS                             │
+ * │                                                                     │
+ * │ NOTE: Application partition is NOT changed — just storage split.    │
+ * └─────────────────────────────────────────────────────────────────────┘
+ *
+ * /delete-node/ &storage_partition;
+ *
+ * &flash0 {
+ *     partitions {
+ *         storage_partition: partition@3b0000 {
+ *             label = "storage";
+ *             reg = <0x3B0000 0x2000>;
+ *         };
+ *         lfs_partition: partition@3b2000 {
+ *             label = "lfs";
+ *             reg = <0x3B2000 0x2E000>;
+ *         };
+ *     };
+ * };
+ */
+
+
+/* ==================================================================
+ * SECTION 5: LITTLEFS MOUNT (REQUIRED)
+ *
+ * Always include at the END of the overlay (after lfs_partition is
+ * defined). This provides the standard /lfs mount point.
+ * ================================================================== */
+
+/* #include "../../common/filesystem.dtsi" */
+
+
+/* ==================================================================
+ * SECTION 5b: QSPI EXTERNAL FLASH (nRF52840 only, OPTIONAL)
+ *
+ * WARNING: The Nordic QSPI NOR driver hangs FOREVER at boot if no
+ * flash chip responds (k_sem_take K_FOREVER in nrf_qspi_nor.c).
+ * This bricks the device — no USB, no BLE, no logs.
+ *
+ * ONLY enable QSPI if your base board physically has a QSPI flash chip.
+ * If unsure, leave QSPI disabled. The DataStore falls back to internal
+ * flash gracefully (20 blob slots instead of 100).
+ *
+ * To enable QSPI:
+ *   1. Set CONFIG_NORDIC_QSPI_NOR=y in board.conf
+ *   2. Add the qspi_flash node below (uncommented)
+ *   3. Add #include "../../common/qspi-ext.dtsi" for /ext mount
+ *
+ * To disable QSPI (default, SAFE):
+ *   1. Set CONFIG_NORDIC_QSPI_NOR=n in board.conf
+ *   2. Add &qspi { status = "disabled"; }; to override upstream DTS
+ *      (some boards like RAK4631 have &qspi enabled in upstream DTS)
+ *   3. Do NOT include qspi-ext.dtsi
+ *
+ * Boards WITH QSPI: RAK19007 base, RAK5005-O base
+ * Boards WITHOUT:   RAK19003 mini base, most XIAO boards
+ * ================================================================== */
+
+/* --- QSPI disabled (safe default) ---
+ *
+ * &qspi {
+ *     status = "disabled";
+ * };
+ */
+
+/* --- QSPI enabled (only if chip is physically present) ---
+ *
+ * &qspi {
+ *     status = "okay";
+ *     pinctrl-0 = <&qspi_default>;
+ *     pinctrl-1 = <&qspi_sleep>;
+ *     pinctrl-names = "default", "sleep";
+ *
+ *     qspi_flash: qspi_flash@0 {
+ *         compatible = "nordic,qspi-nor";
+ *         reg = <0>;
+ *         writeoc = "pp4io";
+ *         readoc = "read4io";
+ *         sck-frequency = <16000000>;
+ *         jedec-id = [85 60 15];
+ *         sfdp-bfp = [
+ *             e5 20 f1 ff  ff ff ff 01  44 eb 08 6b  08 3b 04 bb
+ *             ee ff ff ff  ff ff 00 ff  ff ff 00 ff  0c 20 0f 52
+ *             10 d8 00 ff
+ *         ];
+ *         size = <16777216>;
+ *         has-dpd;
+ *         t-enter-dpd = <3000>;
+ *         t-exit-dpd = <30000>;
+ *         quad-enable-requirements = "S2B1v1";
+ *     };
+ * };
+ *
+ * #include "../../common/qspi-ext.dtsi"
+ *
+ * &qspi_flash {
+ *     partitions {
+ *         compatible = "fixed-partitions";
+ *         #address-cells = <1>;
+ *         #size-cells = <1>;
+ *         qspi_storage_partition: partition@0 {
+ *             label = "qspi_storage";
+ *             reg = <0x00000000 0x00200000>;
+ *         };
+ *     };
+ * };
+ */
+
+
+/* ==================================================================
+ * SECTION 6: USB CDC (nRF52840 only)
+ *
+ * nRF52840 boards that use USB for console need this.
+ * Other platforms skip this entirely:
+ *   nRF54L15: console via UART20 (SAMD11 bridge)
+ *   MG24:     console via USART0
+ *   ESP32:    console via built-in USB-serial
+ * ================================================================== */
+
+/* --- nRF52840 USB CDC ---
+ *
+ * zephyr_udc0: &usbd {
+ *     compatible = "nordic,nrf-usbd";
+ *     status = "okay";
+ *
+ *     cdc_acm_uart: cdc_acm_uart {
+ *         compatible = "zephyr,cdc-acm-uart";
+ *     };
+ * };
+ */
+
+
+/* ==================================================================
+ * SECTION 7: OPTIONAL PERIPHERALS
+ *
+ * These are NOT required for basic mesh operation but add features.
+ * See boards/nrf52840/ikoka_nano_30dbm/ for a fully annotated
+ * real-world example with all options explained.
+ * ================================================================== */
+
+/* --- Battery ADC (nRF52840 only — other platforms don't have SAADC) ---
+ *
+ * / {
+ *     zephyr,user {
+ *         io-channels = <&adc 7>;
+ *         vbat-mv-multiplier = <7200>;
+ *     };
+ * };
+ *
+ * &adc {
+ *     status = "okay";
+ *     #address-cells = <1>;
+ *     #size-cells = <0>;
+ *     channel@7 {
+ *         reg = <7>;
+ *         zephyr,gain = "ADC_GAIN_1_6";
+ *         zephyr,reference = "ADC_REF_INTERNAL";
+ *         zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)>;
+ *         zephyr,input-positive = <NRF_SAADC_AIN7>;
+ *         zephyr,resolution = <12>;
+ *     };
+ * };
+ */
+
+/* --- LEDs (any platform) ---
+ *
+ * / {
+ *     leds {
+ *         compatible = "gpio-leds";
+ *         user_led: led_0 {
+ *             gpios = <&gpio1 1 GPIO_ACTIVE_HIGH>;
+ *             label = "User LED";
+ *         };
+ *     };
+ * };
+ */
+
+/* --- Buttons with input filter chain (any platform) ---
+ *
+ * / {
+ *     buttons: buttons {
+ *         compatible = "gpio-keys";
+ *         user_button: button_0 {
+ *             gpios = <&gpio0 8 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+ *             zephyr,code = <INPUT_KEY_0>;
+ *         };
+ *     };
+ *
+ *     user_btn_longpress {
+ *         compatible = "zephyr,input-longpress";
+ *         input = <&buttons>;
+ *         input-codes = <INPUT_KEY_0>;
+ *         short-codes = <INPUT_KEY_A>;
+ *         long-codes = <INPUT_KEY_POWER>;
+ *         long-delay-ms = <1000>;
+ *     };
+ *
+ *     user_btn_multitap {
+ *         compatible = "zephcore,input-multi-tap";
+ *         input-codes = <INPUT_KEY_A>;
+ *         tap-codes = <INPUT_KEY_1 INPUT_KEY_B INPUT_KEY_D INPUT_KEY_C>;
+ *         tap-delay-ms = <400>;
+ *     };
+ * };
+ */
+
+/* --- GPS on UART (nRF52840 typically on &uart0) ---
+ *
+ * Supported: "luatos,air530z", "quectel,lc76g", "gnss-nmea-generic"
+ *
+ * &uart0 {
+ *     current-speed = <9600>;
+ *     gnss: gnss {
+ *         compatible = "luatos,air530z";
+ *         on-off-gpios = <&gpio1 9 GPIO_ACTIVE_HIGH>;
+ *     };
+ * };
+ */
+
+/* --- OLED Display on I2C (any platform with I2C) ---
+ *
+ * Supported: "sinowealth,sh1106", "solomon,ssd1306fb"
+ * Remember to set  zephyr,display = &oled;  in chosen block.
+ *
+ * &i2c0 {
+ *     zephyr,concat-buf-size = <256>;
+ *     oled: sh1106@3c {
+ *         compatible = "sinowealth,sh1106";
+ *         reg = <0x3c>;
+ *         width = <128>;
+ *         height = <64>;
+ *         segment-offset = <2>;
+ *         page-offset = <0>;
+ *         display-offset = <0>;
+ *         multiplex-ratio = <63>;
+ *         segment-remap;
+ *         com-invdir;
+ *     };
+ * };
+ */
+
+/* --- I2C Environment Sensors (any platform with I2C) ---
+ *
+ * Auto-detected at runtime. Just include the common dtsi.
+ *
+ * &i2c0 {
+ *     #include "../../common/sensors-i2c.dtsi"
+ * };
+ */

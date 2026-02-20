@@ -1,0 +1,263 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * RepeaterDataStore - Filesystem storage for repeater
+ */
+
+#include "RepeaterDataStore.h"
+#include <zephyr/fs/fs.h>
+#include <zephyr/logging/log.h>
+#include <string.h>
+#include <stdio.h>
+
+LOG_MODULE_REGISTER(zephcore_repeater_store, CONFIG_ZEPHCORE_DATASTORE_LOG_LEVEL);
+
+/* File paths for repeater data */
+#define REPEATER_DIR        "/lfs/repeater"
+#define IDENTITY_FILE       "/lfs/repeater/_main.id"
+#define PREFS_FILE          "/lfs/repeater/prefs"
+
+RepeaterDataStore::RepeaterDataStore() : _initialized(false) {
+}
+
+bool RepeaterDataStore::begin() {
+    if (_initialized) return true;
+
+    /* Create repeater directory if it doesn't exist */
+    struct fs_dirent entry;
+    int ret = fs_stat(REPEATER_DIR, &entry);
+    if (ret < 0) {
+        ret = fs_mkdir(REPEATER_DIR);
+        if (ret < 0 && ret != -EEXIST) {
+            LOG_ERR("Failed to create %s: %d", REPEATER_DIR, ret);
+            return false;
+        }
+        LOG_INF("Created %s directory", REPEATER_DIR);
+    }
+
+    _initialized = true;
+    LOG_INF("RepeaterDataStore initialized");
+    return true;
+}
+
+bool RepeaterDataStore::loadIdentity(mesh::LocalIdentity& id) {
+    struct fs_file_t file;
+    fs_file_t_init(&file);
+
+    int ret = fs_open(&file, IDENTITY_FILE, FS_O_READ);
+    if (ret < 0) {
+        LOG_WRN("No identity file at %s", IDENTITY_FILE);
+        return false;  // Caller must generate new identity
+    }
+
+    uint8_t buf[PRV_KEY_SIZE + PUB_KEY_SIZE];
+    ssize_t n = fs_read(&file, buf, sizeof(buf));
+    fs_close(&file);
+
+    LOG_INF("loadIdentity: read %d bytes from %s", (int)n, IDENTITY_FILE);
+
+    if (n >= PRV_KEY_SIZE) {
+        LOG_INF("loadIdentity: calling readFrom (will derive pubkey if n=%d)", (int)n);
+        if (id.readFrom(buf, n)) {
+            LOG_INF("Loaded identity from %s", IDENTITY_FILE);
+            return true;
+        }
+        LOG_ERR("loadIdentity: readFrom failed");
+    }
+
+    LOG_ERR("Identity file corrupt");
+    return false;  // Caller must generate new identity
+}
+
+bool RepeaterDataStore::saveIdentity(const mesh::LocalIdentity& id) {
+    /* Ensure directory exists */
+    if (!_initialized) begin();
+
+    /* Remove old file first */
+    fs_unlink(IDENTITY_FILE);
+
+    struct fs_file_t file;
+    fs_file_t_init(&file);
+
+    int ret = fs_open(&file, IDENTITY_FILE, FS_O_CREATE | FS_O_WRITE);
+    if (ret < 0) {
+        LOG_ERR("Failed to open %s for write: %d", IDENTITY_FILE, ret);
+        return false;
+    }
+
+    uint8_t buf[PRV_KEY_SIZE];
+    int len = id.writeTo(buf, sizeof(buf));
+    ssize_t n = fs_write(&file, buf, len);
+    fs_close(&file);
+
+    if (n == len) {
+        LOG_INF("Saved identity to %s", IDENTITY_FILE);
+        return true;
+    }
+
+    LOG_ERR("Failed to write identity: wrote %d of %d", (int)n, len);
+    return false;
+}
+
+bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
+    struct fs_file_t file;
+    fs_file_t_init(&file);
+
+    int ret = fs_open(&file, PREFS_FILE, FS_O_READ);
+    if (ret < 0) {
+        LOG_DBG("No prefs file at %s, using defaults", PREFS_FILE);
+        initNodePrefs(&prefs);
+        strcpy(prefs.node_name, "Repeater");
+        return true;
+    }
+
+    /* Get file size first */
+    struct fs_dirent entry;
+    ret = fs_stat(PREFS_FILE, &entry);
+    LOG_INF("loadPrefs: file size = %d bytes", ret < 0 ? 0 : (int)entry.size);
+
+    uint8_t pad[8];
+
+    /* Read prefs in same format as Arduino CommonCLI for compatibility */
+    fs_read(&file, &prefs.airtime_factor, sizeof(prefs.airtime_factor));
+    fs_read(&file, &prefs.node_name, sizeof(prefs.node_name));
+    fs_read(&file, pad, 4);
+    fs_read(&file, &prefs.node_lat, sizeof(prefs.node_lat));
+    fs_read(&file, &prefs.node_lon, sizeof(prefs.node_lon));
+    fs_read(&file, &prefs.password, sizeof(prefs.password));
+    fs_read(&file, &prefs.freq, sizeof(prefs.freq));
+    fs_read(&file, &prefs.tx_power_dbm, sizeof(prefs.tx_power_dbm));
+    fs_read(&file, &prefs.disable_fwd, sizeof(prefs.disable_fwd));
+    fs_read(&file, &prefs.advert_interval, sizeof(prefs.advert_interval));
+    fs_read(&file, pad, 1);
+    fs_read(&file, &prefs.rx_delay_base, sizeof(prefs.rx_delay_base));
+    fs_read(&file, &prefs.tx_delay_factor, sizeof(prefs.tx_delay_factor));
+    fs_read(&file, &prefs.guest_password, sizeof(prefs.guest_password));
+    fs_read(&file, &prefs.direct_tx_delay_factor, sizeof(prefs.direct_tx_delay_factor));
+    fs_read(&file, pad, 4);
+    fs_read(&file, &prefs.sf, sizeof(prefs.sf));
+    fs_read(&file, &prefs.cr, sizeof(prefs.cr));
+    fs_read(&file, &prefs.allow_read_only, sizeof(prefs.allow_read_only));
+    fs_read(&file, &prefs.multi_acks, sizeof(prefs.multi_acks));
+    fs_read(&file, &prefs.bw, sizeof(prefs.bw));
+    fs_read(&file, &prefs.agc_reset_interval, sizeof(prefs.agc_reset_interval));
+    fs_read(&file, pad, 3);
+    fs_read(&file, &prefs.flood_max, sizeof(prefs.flood_max));
+    fs_read(&file, &prefs.flood_advert_interval, sizeof(prefs.flood_advert_interval));
+    fs_read(&file, &prefs.interference_threshold, sizeof(prefs.interference_threshold));
+    fs_read(&file, pad, 25);  // skip bridge settings
+    fs_read(&file, &prefs.powersaving_enabled, sizeof(prefs.powersaving_enabled));
+    fs_read(&file, pad, 3);
+    fs_read(&file, &prefs.gps_enabled, sizeof(prefs.gps_enabled));
+    fs_read(&file, &prefs.gps_interval, sizeof(prefs.gps_interval));
+    fs_read(&file, &prefs.advert_loc_policy, sizeof(prefs.advert_loc_policy));
+    fs_read(&file, &prefs.discovery_mod_timestamp, sizeof(prefs.discovery_mod_timestamp));
+    fs_read(&file, &prefs.adc_multiplier, sizeof(prefs.adc_multiplier));
+    fs_read(&file, prefs.owner_info, sizeof(prefs.owner_info));
+
+    fs_close(&file);
+    LOG_INF("Loaded prefs from %s", PREFS_FILE);
+    LOG_INF("  name='%s' freq=%.3f sf=%u bw=%.1f tx_pwr=%d",
+            prefs.node_name, (double)prefs.freq, prefs.sf, (double)prefs.bw, prefs.tx_power_dbm);
+
+    /* Validate radio params - use defaults if garbage */
+    if (prefs.freq < 300.0f || prefs.freq > 1000.0f ||
+        prefs.sf < 5 || prefs.sf > 12 ||
+        prefs.bw < 7.0f || prefs.bw > 500.0f) {
+        LOG_WRN("Invalid radio params in prefs, using defaults: freq=%.3f sf=%u bw=%.1f",
+                (double)prefs.freq, prefs.sf, (double)prefs.bw);
+        prefs.freq = 869.618f;
+        prefs.bw = 62.5f;
+        prefs.sf = 8;
+        prefs.cr = 8;
+        prefs.tx_power_dbm = 22;
+    }
+    return true;
+}
+
+bool RepeaterDataStore::savePrefs(const NodePrefs& prefs) {
+    /* Ensure directory exists */
+    if (!_initialized) begin();
+
+    /* Remove old file first */
+    fs_unlink(PREFS_FILE);
+
+    struct fs_file_t file;
+    fs_file_t_init(&file);
+
+    int ret = fs_open(&file, PREFS_FILE, FS_O_CREATE | FS_O_WRITE);
+    if (ret < 0) {
+        LOG_ERR("Failed to open %s for write: %d", PREFS_FILE, ret);
+        return false;
+    }
+
+    uint8_t pad[25];
+    memset(pad, 0, sizeof(pad));
+
+    /* Write prefs in same format as Arduino CommonCLI for compatibility */
+    fs_write(&file, &prefs.airtime_factor, sizeof(prefs.airtime_factor));
+    fs_write(&file, &prefs.node_name, sizeof(prefs.node_name));
+    fs_write(&file, pad, 4);
+    fs_write(&file, &prefs.node_lat, sizeof(prefs.node_lat));
+    fs_write(&file, &prefs.node_lon, sizeof(prefs.node_lon));
+    fs_write(&file, &prefs.password, sizeof(prefs.password));
+    fs_write(&file, &prefs.freq, sizeof(prefs.freq));
+    fs_write(&file, &prefs.tx_power_dbm, sizeof(prefs.tx_power_dbm));
+    fs_write(&file, &prefs.disable_fwd, sizeof(prefs.disable_fwd));
+    fs_write(&file, &prefs.advert_interval, sizeof(prefs.advert_interval));
+    fs_write(&file, pad, 1);
+    fs_write(&file, &prefs.rx_delay_base, sizeof(prefs.rx_delay_base));
+    fs_write(&file, &prefs.tx_delay_factor, sizeof(prefs.tx_delay_factor));
+    fs_write(&file, &prefs.guest_password, sizeof(prefs.guest_password));
+    fs_write(&file, &prefs.direct_tx_delay_factor, sizeof(prefs.direct_tx_delay_factor));
+    fs_write(&file, pad, 4);
+    fs_write(&file, &prefs.sf, sizeof(prefs.sf));
+    fs_write(&file, &prefs.cr, sizeof(prefs.cr));
+    fs_write(&file, &prefs.allow_read_only, sizeof(prefs.allow_read_only));
+    fs_write(&file, &prefs.multi_acks, sizeof(prefs.multi_acks));
+    fs_write(&file, &prefs.bw, sizeof(prefs.bw));
+    fs_write(&file, &prefs.agc_reset_interval, sizeof(prefs.agc_reset_interval));
+    fs_write(&file, pad, 3);
+    fs_write(&file, &prefs.flood_max, sizeof(prefs.flood_max));
+    fs_write(&file, &prefs.flood_advert_interval, sizeof(prefs.flood_advert_interval));
+    fs_write(&file, &prefs.interference_threshold, sizeof(prefs.interference_threshold));
+    fs_write(&file, pad, 25);  // skip bridge settings
+    fs_write(&file, &prefs.powersaving_enabled, sizeof(prefs.powersaving_enabled));
+    fs_write(&file, pad, 3);
+    fs_write(&file, &prefs.gps_enabled, sizeof(prefs.gps_enabled));
+    fs_write(&file, &prefs.gps_interval, sizeof(prefs.gps_interval));
+    fs_write(&file, &prefs.advert_loc_policy, sizeof(prefs.advert_loc_policy));
+    fs_write(&file, &prefs.discovery_mod_timestamp, sizeof(prefs.discovery_mod_timestamp));
+    fs_write(&file, &prefs.adc_multiplier, sizeof(prefs.adc_multiplier));
+    fs_write(&file, prefs.owner_info, sizeof(prefs.owner_info));
+
+    fs_close(&file);
+    LOG_INF("Saved prefs to %s", PREFS_FILE);
+    return true;
+}
+
+bool RepeaterDataStore::formatFileSystem() {
+    LOG_WRN("Factory reset: erasing repeater data...");
+
+    /* Delete all files in /lfs/repeater/ */
+    struct fs_dir_t dir;
+    fs_dir_t_init(&dir);
+
+    int ret = fs_opendir(&dir, REPEATER_DIR);
+    if (ret < 0) {
+        LOG_WRN("No repeater directory to erase");
+        return true;
+    }
+
+    struct fs_dirent entry;
+    char path[280];  /* REPEATER_DIR (14) + "/" (1) + MAX_FILE_NAME (255) + null */
+
+    while (fs_readdir(&dir, &entry) == 0 && entry.name[0] != '\0') {
+        snprintf(path, sizeof(path), "%s/%s", REPEATER_DIR, entry.name);
+        LOG_INF("Deleting %s", path);
+        fs_unlink(path);
+    }
+    fs_closedir(&dir);
+
+    LOG_INF("Repeater data erased");
+    return true;
+}

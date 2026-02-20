@@ -1,0 +1,12 @@
+# Copyright (c) 2025 MeshCore
+# SPDX-License-Identifier: Apache-2.0
+
+config LORA_LR11XX
+	bool "Semtech LR11xx LoRa transceiver driver"
+	default y
+	depends on DT_HAS_SEMTECH_LR1110_ENABLED
+	select SPI
+	select GPIO
+	help
+	  Enable driver for Semtech LR1110/LR1120/LR1121 LoRa transceivers.
+	  Uses native Semtech lr11xx_driver SDK with Zephyr LoRa driver API.

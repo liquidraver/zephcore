@@ -1,0 +1,25 @@
+/*
+ * Common QSPI external flash LittleFS configuration for ZephCore boards.
+ * Include this in board overlays that have QSPI flash for /ext mount.
+ *
+ * Requires board to define: &qspi_storage_partition
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	fstab {
+		/* External QSPI for contacts, channels, blobs */
+		qspi_lfs: qspi_lfs {
+			compatible = "zephyr,fstab,littlefs";
+			mount-point = "/ext";
+			partition = <&qspi_storage_partition>;
+			automount;
+			read-size = <16>;
+			prog-size = <16>;
+			cache-size = <64>;
+			lookahead-size = <32>;
+			block-cycles = <512>;
+		};
+	};
+};

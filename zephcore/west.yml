@@ -1,0 +1,13 @@
+manifest:
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: bf9007f3819bd324c6f9d93fc6f9aef3474be12c
+      import: true
+
+  self:
+    path: zephcore

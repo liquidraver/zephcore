@@ -1,0 +1,155 @@
+/*
+ * RAK4631 overlay for SoftDevice + UF2 bootloader.
+ * App at 0x26000, storage at 0xD4000, bootloader at 0xF4000.
+ * Uses SoftDevice s140 v6.1.1 (ends at 0x26000).
+ * Console: USB CDC ACM.
+ * Battery: AIN3 = P0.05 (Arduino pin 5), voltage divider per RAK4631 schematic.
+ *
+ * QSPI Flash: Optional external flash on WisBlock Base boards.
+ * Supports: P25Q16H, MX25R1635F, W25Q16, GD25Q16, IS25LP080, ZD25WQ16
+ * If no QSPI flash present, falls back to internal flash only.
+ *
+ * GPS: RAK1910 (u-blox MAX-7Q) on UART0 at 9600 baud (Slot A)
+ * Sensors: Auto-detected on I2C0 - supports:
+ *   - RAK1901 (SHTC3) at 0x70
+ *   - RAK1902 (LPS22HB) at 0x5C
+ *   - RAK1906 (BME680) at 0x76
+ */
+
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+
+/delete-node/ &boot_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+/delete-node/ &storage_partition;
+
+/ {
+	aliases {
+		led1 = &green_led;
+	};
+	chosen {
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+		zephyr,settings-partition = &storage_partition;
+	};
+};
+
+/* Battery ADC - AIN3 on P0.05 with voltage divider */
+/ {
+	zephyr,user {
+		io-channels = <&adc 3>;
+		vbat-mv-multiplier = <4216>;  /* RAK4631 voltage divider */
+	};
+};
+
+&adc {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)>;
+		zephyr,input-positive = <NRF_SAADC_AIN3>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+&lora {
+       dio1-gpios = <&gpio1 15 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+};
+
+/*
+ * GPS on UART0 - RAK1910 (u-blox MAX-7Q) at 9600 baud
+ * Connect to Slot A (UART pins P0.19 RX, P0.20 TX)
+ */
+&uart0 {
+	current-speed = <9600>;
+	gnss: gnss-nmea-generic {
+		compatible = "gnss-nmea-generic";
+	};
+};
+
+/*
+ * Environment & power sensors on I2C0
+ * All supported sensors pre-defined — auto-detected at runtime.
+ * WisBlock modules: RAK1901 (SHTC3), RAK1902 (LPS22HB), RAK1906 (BME680)
+ */
+&i2c0 {
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+/* RAK4631 has BME680, not BME280 — override the common DTSI default */
+/delete-node/ &bme280;
+&i2c0 {
+	bme680: bme680@76 {
+		compatible = "bosch,bme680";
+		reg = <0x76>;
+	};
+};
+
+/*
+ * QSPI Flash — disabled.
+ * RAK19003 Mini Base Board has no QSPI flash. The upstream DTS enables &qspi,
+ * which hangs at boot if no chip is present. Disable it explicitly.
+ * For base boards with QSPI (RAK19007, RAK5005-O), create a separate variant.
+ */
+&qspi {
+	status = "disabled";
+};
+
+/* Filesystem mounts - internal /lfs only (no QSPI) */
+#include "../../common/filesystem.dtsi"
+&flash0 {
+	partitions {
+		/*
+		 * SoftDevice + UF2 bootloader partition layout
+		 * Total: 1MB internal flash
+		 *
+		 * 0x00000 - 0x26000  (152KB) SoftDevice s140 v6.1.1 (reserved)
+		 * 0x26000 - 0xD4000  (696KB) Application
+		 * 0xD4000 - 0xD6000  (8KB)   NVS storage (BLE bonds)
+		 * 0xD6000 - 0xF4000  (120KB) LittleFS (identity, prefs)
+		 * 0xF4000 - 0x100000 (48KB)  UF2 bootloader (reserved)
+		 */
+
+		/* SoftDevice 152KB (reserved, managed by bootloader) */
+		boot_partition: partition@0 {
+			label = "softdevice";
+			read-only;
+			reg = <0x00000000 0x00026000>;
+		};
+
+		/* Application 696KB */
+		code_partition: partition@26000 {
+			label = "Application";
+			reg = <0x00026000 0x000AE000>;
+		};
+
+		/* NVS 8KB for BLE bonds */
+		storage_partition: partition@d4000 {
+			label = "storage";
+			reg = <0x000D4000 0x00002000>;
+		};
+
+		/* LittleFS 120KB for DataStore (identity, contacts, channels, etc) */
+		lfs_partition: partition@d6000 {
+			label = "lfs";
+			reg = <0x000D6000 0x0001E000>;
+		};
+
+		/* UF2 bootloader 48KB (reserved) */
+		uf2_partition: partition@f4000 {
+			label = "UF2";
+			read-only;
+			reg = <0x000F4000 0x0000C000>;
+		};
+	};
+};

@@ -1,0 +1,86 @@
+# Copyright (c) 2025 ZephCore
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Semtech LR1110/LR1120/LR1121 LoRa transceiver.
+  Uses native Semtech lr11xx_driver SDK with Zephyr LoRa driver API.
+
+compatible: "semtech,lr1110"
+
+include: spi-device.yaml
+
+properties:
+  reset-gpios:
+    type: phandle-array
+    required: true
+    description: GPIO connected to NRESET (active-low).
+
+  busy-gpios:
+    type: phandle-array
+    required: true
+    description: GPIO connected to BUSY (high = busy).
+
+  dio1-gpios:
+    type: phandle-array
+    required: true
+    description: GPIO connected to DIO1 (IRQ line, active-high).
+
+  tcxo-voltage-mv:
+    type: int
+    default: 0
+    description: |
+      TCXO supply voltage in millivolts.
+      0 = no TCXO. Common: 1600 (1.6V), 1800 (1.8V), 3300 (3.3V).
+
+  tcxo-startup-delay-ms:
+    type: int
+    default: 5
+    description: TCXO startup stabilization time in milliseconds.
+
+  rx-boosted:
+    type: boolean
+    description: |
+      Enable RX boosted mode (+3dB sensitivity, +2mA power).
+
+  # RF switch configuration (DIO5-DIO8 bitmask)
+  # Bit 0 = RFSW0 (DIO5), Bit 1 = RFSW1 (DIO6),
+  # Bit 2 = RFSW2 (DIO7), Bit 3 = RFSW3 (DIO8)
+  rfswitch-enable:
+    type: int
+    default: 0
+    description: RF switch DIO enable bitmask (which DIOs are RF switches).
+
+  rfswitch-standby:
+    type: int
+    default: 0
+    description: RF switch state in standby mode.
+
+  rfswitch-rx:
+    type: int
+    default: 0
+    description: RF switch state in RX mode.
+
+  rfswitch-tx:
+    type: int
+    default: 0
+    description: RF switch state in TX mode.
+
+  rfswitch-tx-hp:
+    type: int
+    default: 0
+    description: RF switch state in TX high-power mode.
+
+  rfswitch-gnss:
+    type: int
+    default: 0
+    description: RF switch state in GNSS mode.
+
+  pa-hp-sel:
+    type: int
+    default: 7
+    description: PA HP selection (0-7). 7 = max power for HP PA.
+
+  pa-duty-cycle:
+    type: int
+    default: 4
+    description: PA duty cycle (0-7). Controls PA output power curve.

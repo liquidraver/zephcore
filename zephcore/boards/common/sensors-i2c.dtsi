@@ -1,0 +1,105 @@
+/*
+ * Common I2C Sensor Definitions for ZephCore
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Include this file inside an &i2cN { ... } block to define all
+ * supported sensor nodes on that bus.  Sensors that are not physically
+ * present will fail device_is_ready() at runtime and be gracefully
+ * skipped by ZephyrEnvSensors — no harm, no extra current draw.
+ *
+ * Usage (board overlay):
+ *   &i2c0 {
+ *       #include "../../common/sensors-i2c.dtsi"
+ *   };
+ *
+ * ─── Environment Sensors (temperature / humidity / pressure) ───
+ *
+ *  Sensor      │ Address │ Compatible          │ Channels
+ *  ────────────┼─────────┼─────────────────────┼────────────────────
+ *  SHTC3       │ 0x70    │ sensirion,shtcx     │ temp + humidity
+ *  AHT20       │ 0x38    │ aosong,aht20        │ temp + humidity
+ *  DHT20       │ 0x38    │ aosong,dht20        │ temp + humidity
+ *  AM2301B     │ 0x38    │ aosong,am2301b      │ temp + humidity
+ *  SHT4x       │ 0x44    │ sensirion,sht4x     │ temp + humidity
+ *  SHT3xD      │ 0x44    │ sensirion,sht3xd    │ temp + humidity
+ *  BME280      │ 0x76    │ bosch,bme280        │ temp + humidity + pressure
+ *  BME680      │ 0x76    │ bosch,bme680        │ temp + humidity + pressure + gas
+ *  BMP280      │ 0x77    │ bosch,bme280        │ temp + pressure (BME280 driver)
+ *  BMP388      │ 0x77    │ bosch,bmp388        │ temp + pressure
+ *  LPS22HB     │ 0x5C    │ st,lps22hb-press    │ pressure + temp
+ *
+ *  Note: AHT20/DHT20/AM2301B share address 0x38 — only one can be
+ *  defined.  We use AHT20 as the default (same driver handles all).
+ *
+ *  Note: SHT4x and SHT3xD share address 0x44 — only one can be
+ *  defined.  We use SHT4x as the default (more common in new designs).
+ *
+ *  Note: BME280 and BME680 share address 0x76 — only one can be
+ *  defined.  We use BME280 as default (its driver also handles BMP280).
+ *  Boards with BME680 should override this node in their overlay.
+ *
+ *  Note: BMP280 uses the BME280 driver (same register set), at alt
+ *  address 0x77.  BMP388 also uses 0x77.  Only one can be defined —
+ *  we use BMP388 since it's the newer part.
+ *
+ * ─── Power Monitor Sensors (voltage / current / power) ───
+ *
+ *  Sensor      │ Address │ Compatible   │ Channels
+ *  ────────────┼─────────┼──────────────┼────────────────────
+ *  INA219      │ 0x40    │ ti,ina219    │ 1ch: V + I + P
+ *  INA3221     │ 0x40    │ ti,ina3221   │ 3ch: V + I + P
+ *  INA226      │ 0x40    │ ti,ina226    │ 1ch: V + I + P
+ *
+ *  Note: INA219, INA3221, and INA226 share address 0x40 — only one
+ *  can be defined at a time.  Boards with a specific INA chip should
+ *  delete the others or override this file.
+ *  We define INA219 as default (most common single-channel monitor).
+ */
+
+/* ── Temperature / Humidity ── */
+
+shtc3: shtc3@70 {
+	compatible = "sensirion,shtcx";
+	reg = <0x70>;
+	measure-mode = "normal";
+	clock-stretching;
+};
+
+aht20: aht20@38 {
+	compatible = "aosong,aht20";
+	reg = <0x38>;
+};
+
+sht4x: sht4x@44 {
+	compatible = "sensirion,sht4x";
+	reg = <0x44>;
+	repeatability = <2>;  /* high */
+};
+
+/* ── Combo: Temperature + Humidity + Pressure ── */
+
+bme280: bme280@76 {
+	compatible = "bosch,bme280";
+	reg = <0x76>;
+};
+
+/* ── Pressure (standalone) ── */
+
+lps22hb: lps22hb@5c {
+	compatible = "st,lps22hb-press";
+	reg = <0x5c>;
+};
+
+bmp388: bmp388@77 {
+	compatible = "bosch,bmp388";
+	reg = <0x77>;
+};
+
+/* ── Power Monitors ── */
+
+ina219: ina219@40 {
+	compatible = "ti,ina219";
+	reg = <0x40>;
+	shunt-milliohm = <100>;
+	lsb-microamp = <10>;
+};

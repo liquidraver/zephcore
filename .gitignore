@@ -1,0 +1,83 @@
+# Build output (west build creates these)
+/build*/
+build/
+build-*/
+**/build/
+**/build-*/
+/twister-out*/
+
+# West workspace (recreated by west init/update)
+/.west/
+
+# Zephyr SDK and toolchain (large, downloaded separately)
+/bootloader/
+/modules/
+/tools/
+/zephyr/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+*~
+*.bak
+
+# Debug artifacts
+*.log
+jlink_*.txt
+rtt_*.log
+
+# UF2 / binary artifacts
+*.uf2
+*.hex
+*.bin
+*.elf
+*.map
+*.obj
+*.o
+*.a
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code project data
+.claude/
+
+# RTT output files (missed by *.log pattern)
+rtt_*.txt
+
+# JLink scripts and outputs
+*.jlink
+
+# Documentation that was moved/deleted
+/docs/
+
+# Temporary/scratch files
+*.tmp
+*.orig
+
+# CMake/Ninja build system
+CMakeCache.txt
+CMakeFiles/
+.ninja_*
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Memory dumps
+*.dmp
+core
+
+# Utility/test source files
+meshcore/src/eraser_main.cpp
+zephcore/AUDIT_FINDINGS.md
+
+# Side projects (not part of main firmware)
+/doom/

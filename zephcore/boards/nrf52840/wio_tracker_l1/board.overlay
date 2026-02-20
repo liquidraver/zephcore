@@ -1,0 +1,28 @@
+/*
+ * Wio Tracker L1 overlay for ZephCore.
+ * SoftDevice + UF2 bootloader layout.
+ * Console: USB CDC ACM.
+ * Battery: AIN7 = P0.31, voltage divider 2:1.
+ */
+
+/* GPS power control - P1.09
+ * The luatos,air530z driver also manages this pin via on-off-gpios,
+ * but we need our own alias so ZephyrSensorManager can toggle power
+ * independently (driver PM suspend/resume hangs on modem_pipe ops). */
+/ {
+	gps_en: gps-enable {
+		compatible = "gpio-leds";
+		gps_enable_pin: gps_enable {
+			gpios = <&gpio1 9 GPIO_ACTIVE_HIGH>;
+			label = "GPS Enable";
+		};
+	};
+
+	aliases {
+		gps-enable = &gps_enable_pin;
+	};
+};
+
+/* Filesystem mounts - internal /lfs + external /ext QSPI */
+#include "../../common/filesystem.dtsi"
+#include "../../common/qspi-ext.dtsi"

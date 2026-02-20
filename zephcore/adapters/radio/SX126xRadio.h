@@ -1,0 +1,42 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * ZephCore Radio adapter for SX126x (SX1261/SX1262/SX1268) using Zephyr LoRa driver
+ */
+
+#pragma once
+
+#include "LoRaRadioBase.h"
+
+/* SX126x-specific: RX Duty Cycle power saving - uses RadioLib algorithm */
+#define RADIOLIB_MIN_SYMBOLS_SF7_PLUS  8
+#define RADIOLIB_MIN_SYMBOLS_SF6_LESS  12
+#define RADIOLIB_TCXO_DELAY_US         1000  /* ~1ms startup overhead */
+
+namespace mesh {
+
+class SX126xRadio : public LoRaRadioBase {
+public:
+	SX126xRadio(const struct device *lora_dev, MainBoard &board,
+		    NodePrefs *prefs = nullptr);
+
+	void begin() override;
+
+protected:
+	/* Hardware primitives */
+	void hwConfigure(const struct lora_modem_config &cfg) override;
+	void hwStartReceive() override;
+	void hwCancelReceive() override;
+	int hwSendAsync(uint8_t *buf, uint32_t len,
+			struct k_poll_signal *sig) override;
+	int16_t hwGetCurrentRSSI() override;
+	bool hwIsPreambleDetected() override;
+	void hwSetRxBoost(bool enable) override;
+	void hwSetRxDutyCycle(bool enable) override;
+	void hwResetAGC() override;
+
+private:
+	/* SX126x-specific: RadioLib duty cycle timing algorithm */
+	void applyRxDutyCycleIfEnabled();
+};
+
+} /* namespace mesh */

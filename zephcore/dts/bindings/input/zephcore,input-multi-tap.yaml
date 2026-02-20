@@ -1,0 +1,57 @@
+# Copyright 2025 ZephCore
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Input multi-tap pseudo-device.
+
+  Listens for key-press events from a parent input device and counts rapid
+  taps within a configurable window. When the window expires, emits a key
+  code based on the number of taps observed.
+
+  The tap-codes array maps tap counts to output key codes:
+    tap-codes[0] = code emitted for 1 tap
+    tap-codes[1] = code emitted for 2 taps
+    ...up to 4 entries.
+
+  If the tap count reaches the length of tap-codes, the code is emitted
+  immediately (no need to wait for more taps). Otherwise the tap-delay-ms
+  window must expire before the code is emitted.
+
+  Example (single button with page-next and buzzer-toggle):
+    user_btn_multitap {
+        compatible = "zephcore,input-multi-tap";
+        input = <&buttons>;
+        input-codes = <INPUT_KEY_A>;
+        tap-codes = <INPUT_KEY_1 INPUT_KEY_B>;
+        tap-delay-ms = <400>;
+    };
+
+compatible: "zephcore,input-multi-tap"
+
+properties:
+  input:
+    type: phandle
+    description: |
+      Input device phandle to listen to. If not specified, listens for
+      input from all devices.
+
+  input-codes:
+    type: array
+    required: true
+    description: |
+      Array of input event key codes to watch (INPUT_KEY_* or INPUT_BTN_*).
+
+  tap-codes:
+    type: array
+    required: true
+    description: |
+      Array of output key codes for each tap count (1-based).
+      Entry 0 = 1 tap, entry 1 = 2 taps, etc.
+      Maximum 4 entries.
+
+  tap-delay-ms:
+    type: int
+    required: true
+    description: |
+      Maximum time in milliseconds between taps. After the last tap,
+      this delay must expire before the tap code is emitted.

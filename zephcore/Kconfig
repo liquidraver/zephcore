@@ -1,0 +1,424 @@
+# SPDX-License-Identifier: Apache-2.0
+
+source "$(ZEPHYR_BASE)/Kconfig.zephyr"
+
+module = ZEPHCORE_MAIN
+module-str = zephcore_main
+source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
+
+module = ZEPHCORE_BLE
+module-str = zephcore_ble
+source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
+
+module = ZEPHCORE_LORA
+module-str = zephcore_lora
+source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
+
+module = ZEPHCORE_BOARD
+module-str = zephcore_board
+source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
+
+module = ZEPHCORE_DATASTORE
+module-str = zephcore_datastore
+source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
+
+module = ZEPHCORE_GPS
+module-str = zephcore_gps
+source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
+
+module = ZEPHCORE_SENSORS
+module-str = zephcore_sensors
+source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
+
+module = ZEPHCORE_USB
+module-str = zephcore_usb
+source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
+
+module = ZEPHCORE_UI_ACTIONS
+module-str = zephcore_ui_actions
+source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
+
+menu "ZephCore"
+
+menu "Device Role"
+
+choice ZEPHCORE_ROLE
+	prompt "Device Role"
+	default ZEPHCORE_ROLE_COMPANION
+	help
+	  Select the device role. Companion devices connect to mobile apps via BLE.
+	  Repeaters forward packets and are configured via USB serial CLI.
+
+config ZEPHCORE_ROLE_COMPANION
+	bool "Companion Device"
+	help
+	  BLE companion device that connects to ZephCore mobile app.
+	  Includes BLE stack, contact management, offline queue, channels.
+
+config ZEPHCORE_ROLE_REPEATER
+	bool "Repeater"
+	help
+	  LoRa mesh repeater with USB serial CLI interface.
+	  No BLE stack. Has ACL authentication, region filtering,
+	  neighbor tracking, and full CLI command set.
+
+endchoice
+
+if ZEPHCORE_ROLE_REPEATER
+
+config ZEPHCORE_MAX_CLIENTS
+	int "Maximum ACL clients"
+	default 32
+	help
+	  Maximum clients in the Access Control List.
+	  Each client stores pubkey, permissions, and shared secret.
+
+config ZEPHCORE_MAX_NEIGHBOURS
+	int "Maximum tracked neighbors"
+	default 16
+	help
+	  Maximum number of neighboring repeaters to track.
+	  Set to 0 to disable neighbor tracking.
+
+config ZEPHCORE_MAX_REGION_ENTRIES
+	int "Maximum region entries"
+	default 32
+	help
+	  Maximum entries in the region map for flood filtering.
+	  Regions control which transport codes are allowed to flood.
+
+config ZEPHCORE_ADMIN_PASSWORD
+	string "Default admin password"
+	default "password"
+	help
+	  Default password for admin access to the repeater.
+	  Should be changed on first configuration!
+
+config ZEPHCORE_GUEST_PASSWORD
+	string "Default guest password"
+	default ""
+	help
+	  Default password for guest access. Empty string disables guest access.
+
+endif # ZEPHCORE_ROLE_REPEATER
+
+endmenu # Device Role
+
+if ZEPHCORE_ROLE_COMPANION
+
+config ZEPHCORE_MAX_CONTACTS
+	int "Maximum number of contacts"
+	default 350
+	help
+	  Maximum number of contacts that can be stored.
+
+config ZEPHCORE_MAX_CHANNELS
+	int "Maximum number of channels"
+	default 40
+	help
+	  Maximum number of group channels that can be stored.
+
+config ZEPHCORE_OFFLINE_QUEUE_SIZE
+	int "Offline message queue size"
+	default 16
+	help
+	  Size of the offline message queue for incoming messages.
+
+config ZEPHCORE_ACK_TABLE_SIZE
+	int "ACK tracking table size"
+	default 8
+	help
+	  Number of pending ACKs that can be tracked.
+
+config ZEPHCORE_MAX_CONNECTIONS
+	int "Maximum server connections"
+	default 16
+	help
+	  Maximum number of simultaneous room server connections with keep-alive.
+
+config ZEPHCORE_ADVERT_PATH_TABLE_SIZE
+	int "Advert path table size"
+	default 16
+	help
+	  Size of recently-heard advert path table.
+
+menu "BLE Configuration"
+
+config ZEPHCORE_BLE_PASSKEY
+	int "BLE pairing passkey (6 digits)"
+	default 123456
+	range 0 999999
+	help
+	  Fixed 6-digit passkey for BLE MITM pairing.
+
+config ZEPHCORE_BLE_QUEUE_SIZE
+	int "BLE TX/RX message queue depth"
+	default 12
+	range 4 64
+	help
+	  Number of frames that can be queued for BLE TX/RX.
+	  Larger = better buffering for bursty traffic, more RAM.
+
+config ZEPHCORE_BLE_CONN_MIN_INTERVAL
+	int "BLE minimum connection interval (units: 1.25ms)"
+	default 12
+	range 6 3200
+	help
+	  Minimum BLE connection interval in 1.25ms units.
+	  12 = 15ms. Matches Arduino default. Lower = more responsive, higher power.
+
+config ZEPHCORE_BLE_CONN_MAX_INTERVAL
+	int "BLE maximum connection interval (units: 1.25ms)"
+	default 36
+	range 6 3200
+	help
+	  Maximum BLE connection interval in 1.25ms units.
+	  36 = 45ms. Matches Arduino default. Higher = lower power when idle.
+
+config ZEPHCORE_BLE_CONN_LATENCY
+	int "BLE connection latency (skip events)"
+	default 4
+	range 0 500
+	help
+	  Skip up to N connection events when idle to save power.
+	  4 = skip 4 events (effective interval up to 375ms idle).
+
+config ZEPHCORE_BLE_CONN_TIMEOUT
+	int "BLE supervision timeout (units: 10ms)"
+	default 500
+	range 10 3200
+	help
+	  Supervision timeout in 10ms units.
+	  500 = 5000ms. Connection drops if no data for this duration.
+
+config ZEPHCORE_BLE_ADV_FAST_INTERVAL
+	int "BLE fast advertising interval (units: 0.625ms)"
+	default 32
+	range 20 1600
+	help
+	  Fast advertising interval in 0.625ms units.
+	  32 = 20ms (Apple-recommended for quick discovery).
+
+config ZEPHCORE_BLE_ADV_SLOW_INTERVAL
+	int "BLE slow advertising interval (units: 0.625ms)"
+	default 874
+	range 400 3200
+	help
+	  Slow advertising interval in 0.625ms units.
+	  874 = 546.25ms (Apple-compliant, battery-friendly).
+
+config ZEPHCORE_BLE_ADV_FAST_TIMEOUT
+	int "Duration of fast advertising mode (seconds)"
+	default 30
+	range 10 300
+	help
+	  How long to advertise at the fast rate before switching to slow.
+
+endmenu # BLE Configuration
+
+endif # ZEPHCORE_ROLE_COMPANION
+
+config ZEPHCORE_HOUSEKEEPING_INTERVAL_MS
+	int "Periodic housekeeping interval (ms)"
+	default 5000
+	range 1000 60000
+	help
+	  Wake interval for noise floor calibration, battery reads, and UI refresh.
+	  Longer = lower power, less responsive monitoring.
+
+menu "Radio Configuration"
+
+choice ZEPHCORE_RADIO_TYPE
+	prompt "LoRa Radio Type"
+	default ZEPHCORE_RADIO_NATIVE
+	help
+	  Select the LoRa radio driver.
+
+config ZEPHCORE_RADIO_NATIVE
+	bool "Zephyr native LoRa driver (SX126x, SX127x, LLCC68, STM32WL)"
+	help
+	  Uses Zephyr's built-in LoRa driver. Supports all radios that Zephyr
+	  has device tree bindings for:
+	    SX126x:  SX1261, SX1262, SX1268
+	    SX127x:  SX1272, SX1276, SX1278
+	    LLCC68:  Semtech LLCC68
+	    STM32WL: STM32WL SUBGHZ radio (SX126x-based)
+	  Used by: RAK4631, Wio Tracker L1, all XIAO + Wio-SX1262 boards
+
+config ZEPHCORE_RADIO_LR1110
+	bool "LR1110/LR1120/LR1121 (custom driver)"
+	select LORA
+	help
+	  Semtech LR11xx via custom ZephCore driver (not upstream Zephyr).
+	  Uses SPI mutex for thread safety + BUSY stuck recovery.
+	  TCXO, RF switch, and PA config are in the device tree.
+	  For any board with an LR1110, LR1120, or LR1121 radio.
+
+endchoice
+
+endmenu # Radio Configuration
+
+menu "Board Configuration"
+
+config ZEPHCORE_BOARD_NAME
+	string "Board name for identification"
+	default "Zephyr Device"
+	help
+	  Human-readable board name returned by the 'board' CLI command
+	  and reported in device info. Should match Arduino variant names
+	  for consistency (e.g., "RAK 4631", "Wio Tracker L1", "T1000-E").
+
+config ZEPHCORE_SD_FWID
+	hex "SoftDevice firmware ID for DFU packages"
+	default 0x00B6
+	depends on SOC_SERIES_NRF52
+	help
+	  SoftDevice firmware ID used by adafruit-nrfutil when generating
+	  DFU zip packages (--sd-req parameter). Must match the SoftDevice
+	  version flashed with the Adafruit bootloader on the target device.
+	  Only applicable to nRF52 boards with Adafruit bootloader.
+
+	  Common values:
+	    0x00B6 - S140 v6.1.1 (RAK4631, Wio Tracker, T1000-E)
+	    0x0123 - S140 v7.3.0 (XIAO nRF52840, Ikoka Nano)
+
+config ZEPHCORE_VBAT_MV_MULTIPLIER
+	int "Battery voltage ADC multiplier (fallback)"
+	default 7200
+	help
+	  Fallback multiplier if vbat-mv-multiplier is not defined in
+	  devicetree zephyr,user node.
+
+	  Prefer defining in devicetree alongside ADC channel:
+	    zephyr,user {
+	        io-channels = <&adc 7>;
+	        vbat-mv-multiplier = <7200>;
+	    };
+
+	  Formula: mv = (raw * multiplier) / 4096
+
+endmenu
+
+menu "Debug & Logging"
+
+config ZEPHCORE_PACKET_LOGGING
+	bool "Enable mesh packet logging"
+	default n
+	depends on LOG
+	help
+	  Log all RX and TX mesh packets in Arduino-compatible format.
+	  Output format matches Arduino MESH_PACKET_LOGGING exactly:
+	  "HH:MM:SS - D/M/YYYY U: RX, len=N (type=N, route=D/F, payload_len=N) SNR=N RSSI=N score=N time=N hash=XXXX [XX -> XX]"
+
+config ZEPHCORE_PACKET_LOGGING_ONLY
+	bool "Quiet mode - only packet logs, no debug spam"
+	default n
+	depends on ZEPHCORE_PACKET_LOGGING
+	help
+	  When enabled, suppresses all other log messages and only outputs
+	  packet logging (RAW, RX, TX lines). Uses printk() to bypass
+	  log level filtering.
+
+endmenu
+
+menu "LoRa Power Saving"
+
+config ZEPHCORE_LORA_RX_DUTY_CYCLE
+	bool "Enable LoRa RX duty cycle power saving"
+	default n
+	help
+	  Enable RX duty cycling for power saving on battery-powered devices.
+	  Uses RadioLib's algorithm to calculate optimal timing based on SF/BW.
+
+	  The key insight is that LoRa preamble symbols are all identical,
+	  so CAD/RX can detect preamble even if we wake mid-stream. The
+	  algorithm ensures we always catch at least 8 symbols regardless
+	  of when we wake within the preamble window.
+
+	  Power savings: ~60-70% reduction in RX current (10-15mA to 3-5mA).
+
+	  Note: Still experimental. Disable if packets are being missed.
+
+endmenu
+
+menu "GPS Configuration"
+
+config ZEPHCORE_GPS_POLL_INTERVAL_SEC
+	int "GPS poll interval in seconds"
+	default 300
+	range 10 86400
+	help
+	  How often to wake GPS and acquire a fix.
+	  Default 300 seconds (5 minutes).
+
+config ZEPHCORE_GPS_FIX_TIMEOUT_SEC
+	int "GPS fix acquisition timeout in seconds"
+	default 30
+	range 10 300
+	help
+	  Maximum time to wait for GPS fix before giving up.
+	  GPS will be powered off after this timeout.
+
+endmenu
+
+menu "UI Configuration"
+
+config ZEPHCORE_UI_BUTTONS
+	bool "Enable button input"
+	default y
+	depends on INPUT
+	help
+	  Enable button/joystick input with long-press, double-click,
+	  and triple-click detection using Zephyr's native input subsystem.
+
+config ZEPHCORE_UI_MULTI_TAP
+	bool "Enable multi-tap input filter"
+	default y
+	depends on ZEPHCORE_UI_BUTTONS
+	help
+	  Enable the multi-tap input filter that counts rapid taps
+	  within a configurable window and emits different key codes
+	  based on tap count. Supports 1-4 tap levels via devicetree.
+	  Single-tap has ~400ms latency (waits for window to expire).
+
+config ZEPHCORE_UI_BUZZER
+	bool "Enable buzzer"
+	default y
+	depends on PWM
+	help
+	  Enable PWM buzzer with RTTTL melody support.
+	  Requires a PWM-capable pin connected to a buzzer.
+
+config ZEPHCORE_UI_DISPLAY
+	bool "Enable display (OLED, LCD, e-ink)"
+	default y
+	depends on DISPLAY
+	depends on CHARACTER_FRAMEBUFFER
+	help
+	  Enable page-based UI on any Zephyr-supported display.
+	  Auto-detects display via "zephyr,display" chosen node or
+	  legacy nodelabels (sh1106, ssd1306). Resolution and font
+	  are queried at runtime — no hardcoded dimensions.
+	  Supports OLED (SSD1306, SH1106), LCD, e-ink, etc.
+
+config ZEPHCORE_UI_DISPLAY_AUTO_OFF_MS
+	int "Display auto-off timeout (ms)"
+	default 15000
+	depends on ZEPHCORE_UI_DISPLAY
+	help
+	  Time in milliseconds before the display turns off
+	  after the last user interaction. Set to 0 to disable.
+
+config ZEPHCORE_EASTER_EGG_DOOM
+	bool "Enable Doom raycaster easter egg"
+	default n
+	depends on ZEPHCORE_UI_DISPLAY && ZEPHCORE_UI_BUTTONS
+	help
+	  Hidden easter egg: Wolf3D-style raycaster on the OLED.
+	  Activate with double-click + single-click joystick center
+	  on the first page. Double-click to exit.
+	  Adds ~5KB flash and ~1.7KB RAM when enabled.
+
+endmenu
+
+endmenu

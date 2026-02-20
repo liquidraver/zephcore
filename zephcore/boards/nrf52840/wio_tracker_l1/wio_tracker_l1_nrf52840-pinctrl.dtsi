@@ -1,0 +1,123 @@
+/*
+ * Seeed Wio Tracker L1 pin control definitions
+ * Copyright (c) 2025 ZephCore
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Pin mappings from Arduino variant.cpp:
+ * - SPI0 (LoRa): SCK=P0.30, MISO=P0.03, MOSI=P0.28, CS=P1.14
+ * - I2C0 (OLED): SDA=P0.06, SCL=P0.05
+ * - I2C1 (Grove): SDA=P1.11 (D17), SCL=P1.12 (D18)
+ * - UART (GPS): TX=P0.27, RX=P0.26
+ * - QSPI: SCK=P0.21, CS=P0.25, IO0=P0.20, IO1=P0.24, IO2=P0.22, IO3=P0.23
+ */
+
+&pinctrl {
+	/* SPI1 for LoRa SX1262 (uses SPI1 to avoid conflict with I2C0) */
+	spi1_default: spi1_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 0, 30)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 28)>,
+				<NRF_PSEL(SPIM_MISO, 0, 3)>;
+		};
+	};
+
+	spi1_sleep: spi1_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 0, 30)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 28)>,
+				<NRF_PSEL(SPIM_MISO, 0, 3)>;
+			low-power-enable;
+		};
+	};
+
+	/* I2C0 for OLED display */
+	i2c0_default: i2c0_default {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 6)>,
+				<NRF_PSEL(TWIM_SCL, 0, 5)>;
+		};
+	};
+
+	i2c0_sleep: i2c0_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 6)>,
+				<NRF_PSEL(TWIM_SCL, 0, 5)>;
+			low-power-enable;
+		};
+	};
+
+	/* I2C1 for Grove connector */
+	i2c1_default: i2c1_default {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 1, 11)>,
+				<NRF_PSEL(TWIM_SCL, 1, 12)>;
+		};
+	};
+
+	i2c1_sleep: i2c1_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 1, 11)>,
+				<NRF_PSEL(TWIM_SCL, 1, 12)>;
+			low-power-enable;
+		};
+	};
+
+	/* UART0 for GPS L76KB at 9600 baud
+	 * P0.27 = GNSS_TX (GPS sends to MCU)
+	 * P0.26 = GNSS_RX (MCU sends to GPS)
+	 */
+	uart0_default: uart0_default {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 0, 27)>,
+				<NRF_PSEL(UART_RX, 0, 26)>;
+			bias-pull-up;
+		};
+	};
+
+	uart0_sleep: uart0_sleep {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 0, 27)>,
+				<NRF_PSEL(UART_RX, 0, 26)>;
+			low-power-enable;
+		};
+	};
+
+	/* PWM0 for buzzer on P1.00 */
+	pwm0_default: pwm0_default {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 1, 0)>;
+		};
+	};
+
+	pwm0_sleep: pwm0_sleep {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 1, 0)>;
+			low-power-enable;
+		};
+	};
+
+	/* QSPI for external flash */
+	qspi_default: qspi_default {
+		group1 {
+			psels = <NRF_PSEL(QSPI_SCK, 0, 21)>,
+				<NRF_PSEL(QSPI_IO0, 0, 20)>,
+				<NRF_PSEL(QSPI_IO1, 0, 24)>,
+				<NRF_PSEL(QSPI_IO2, 0, 22)>,
+				<NRF_PSEL(QSPI_IO3, 0, 23)>,
+				<NRF_PSEL(QSPI_CSN, 0, 25)>;
+		};
+	};
+
+	qspi_sleep: qspi_sleep {
+		group1 {
+			psels = <NRF_PSEL(QSPI_SCK, 0, 21)>,
+				<NRF_PSEL(QSPI_IO0, 0, 20)>,
+				<NRF_PSEL(QSPI_IO1, 0, 24)>,
+				<NRF_PSEL(QSPI_IO2, 0, 22)>,
+				<NRF_PSEL(QSPI_IO3, 0, 23)>,
+				<NRF_PSEL(QSPI_CSN, 0, 25)>;
+			low-power-enable;
+		};
+	};
+};

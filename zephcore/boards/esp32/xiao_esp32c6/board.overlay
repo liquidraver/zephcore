@@ -1,0 +1,79 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * XIAO ESP32-C6 + SX1262 LoRa
+ *
+ * Pin mapping (from Arduino MeshCore variants/xiao_c6):
+ * - D4 (GPIO22) = NSS     - D8  (GPIO19) = SPI SCK
+ * - D1 (GPIO1)  = DIO1    - D9  (GPIO20) = SPI MISO
+ * - D3 (GPIO21) = BUSY    - D10 (GPIO18) = SPI MOSI
+ * - D2 (GPIO2)  = RESET
+ * - D5 (GPIO23) = RXEN
+ * - GPIO15      = Yellow LED (TX indicator)
+ *
+ * Console: USB-Serial/JTAG (usb_serial)
+ */
+
+/ {
+	aliases {
+		lora0 = &lora;
+	};
+
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+		zephyr,settings-partition = &storage_partition;
+	};
+};
+
+/* SX1262 on SPI2 (XIAO SPI bus — SCK/MISO/MOSI already in pinctrl) */
+&spi2 {
+	cs-gpios = <&gpio0 22 GPIO_ACTIVE_LOW>;  /* D4 = GPIO22 NSS */
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		/* LoRa control pins */
+		reset-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;    /* D2 = GPIO2 */
+		busy-gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;   /* D3 = GPIO21 */
+		dio1-gpios = <&gpio0 1 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;  /* D1 = GPIO1 */
+
+		/* RF switch: RXEN for RX, DIO2 drives TX enable */
+		rx-enable-gpios = <&gpio0 23 GPIO_ACTIVE_HIGH>;  /* D5 = GPIO23 RXEN */
+		dio2-tx-enable;
+
+		/* TCXO 1.8V via DIO3 (SX126X_DIO3_TCXO_1V8 = 0x02) */
+		dio3-tcxo-voltage = <2>;
+		tcxo-power-startup-delay-ms = <10>;
+
+		/* RX boosted mode for better sensitivity */
+		rx-boosted;
+	};
+};
+
+/*
+ * Flash partitions — repartition default ESP32 layout.
+ * Default storage_partition is 192KB at 0x3B0000.
+ * Split into: NVS 8KB (BLE bonds) + LittleFS 184KB (identity, contacts, etc.)
+ */
+/delete-node/ &storage_partition;
+
+&flash0 {
+	partitions {
+		/* NVS 8KB for BLE bonds + settings */
+		storage_partition: partition@3b0000 {
+			label = "storage";
+			reg = <0x3B0000 0x2000>;
+		};
+
+		/* LittleFS 184KB for DataStore */
+		lfs_partition: partition@3b2000 {
+			label = "lfs";
+			reg = <0x3B2000 0x2E000>;
+		};
+	};
+};
+
+/* LittleFS auto-mount — standard /lfs mount point */
+#include "../../common/filesystem.dtsi"

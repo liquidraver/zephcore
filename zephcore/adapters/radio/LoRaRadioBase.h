@@ -1,0 +1,174 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * LoRa radio base class — all shared state and algorithms.
+ *
+ * Subclasses (SX126xRadio, LR1110Radio, …) only implement the hw*()
+ * primitives that talk to real hardware.  Everything else lives here.
+ */
+
+#pragma once
+
+#include <mesh/Radio.h>
+#include <mesh/Board.h>
+#include <NodePrefs.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include "radio_common.h"
+
+namespace mesh {
+
+class LoRaRadioBase : public Radio {
+public:
+	LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
+		      NodePrefs *prefs = nullptr);
+
+	void setPrefs(NodePrefs *prefs) { _prefs = prefs; }
+
+	/* Callbacks */
+	void setRxCallback(RadioRxCallback cb, void *user_data) {
+		_rx_cb = cb;
+		_rx_cb_user_data = user_data;
+	}
+	void setTxDoneCallback(RadioTxDoneCallback cb, void *user_data) {
+		_tx_done_cb = cb;
+		_tx_done_cb_user_data = user_data;
+	}
+
+	/* Radio interface (all implemented in base) */
+	void begin() override;
+	void reconfigure();
+	void reconfigureWithParams(float freq, float bw, uint8_t sf, uint8_t cr);
+	int recvRaw(uint8_t *bytes, int sz) override;
+	uint32_t getEstAirtimeFor(int len_bytes) override;
+	float packetScore(float snr, int packet_len) override;
+	bool startSendRaw(const uint8_t *bytes, int len) override;
+	bool isSendComplete() override;
+	void onSendFinished() override;
+	bool isInRecvMode() const override;
+	float getLastRSSI() const override;
+	float getLastSNR() const override;
+
+	/* Packet statistics */
+	uint32_t getPacketsRecv() const override { return _packets_recv; }
+	uint32_t getPacketsSent() const override { return _packets_sent; }
+	uint32_t getPacketsRecvErrors() const override { return _packets_recv_errors; }
+	void resetStats() {
+		_packets_recv = 0;
+		_packets_sent = 0;
+		_packets_recv_errors = 0;
+	}
+
+	/* Advanced radio features */
+	int getNoiseFloor() const override;
+	void triggerNoiseFloorCalibrate(int threshold) override;
+	void resetAGC() override;
+	bool isReceiving() override;
+
+	/* Extended API */
+	bool isChannelActive(int threshold = 0);
+
+	/* Power saving */
+	void enableRxDutyCycle(bool enable);
+	bool isRxDutyCycleEnabled() const { return _rx_duty_cycle_enabled; }
+	void setRxBoost(bool enable);
+	bool isRxBoostEnabled() const { return _rx_boost_enabled; }
+
+protected:
+	/* ── Hardware primitives — subclass MUST implement ─────────── */
+
+	/** Apply lora_modem_config + any chip-specific extras (image cal, etc.) */
+	virtual void hwConfigure(const struct lora_modem_config &cfg) = 0;
+
+	/** Start async receive (lora_recv_async + boost/duty-cycle setup) */
+	virtual void hwStartReceive() = 0;
+
+	/** Cancel current async receive */
+	virtual void hwCancelReceive() = 0;
+
+	/** Start async send — returns 0 on success */
+	virtual int hwSendAsync(uint8_t *buf, uint32_t len,
+				struct k_poll_signal *sig) = 0;
+
+	/** Read instantaneous RSSI from hardware */
+	virtual int16_t hwGetCurrentRSSI() = 0;
+
+	/** Check IRQ flags for preamble/header detection */
+	virtual bool hwIsPreambleDetected() = 0;
+
+	/** Set RX LNA boost on/off */
+	virtual void hwSetRxBoost(bool enable) = 0;
+
+	/** Set RX duty cycle on/off (hardware level) */
+	virtual void hwSetRxDutyCycle(bool enable) = 0;
+
+	/** Reset AGC (chip-specific, may be no-op) */
+	virtual void hwResetAGC() = 0;
+
+	/* ── Shared helpers available to subclasses ────────────────── */
+
+	void buildModemConfig(struct lora_modem_config &cfg, bool tx);
+	void configureRx();
+	void configureTx();
+	void startReceive();
+
+	/* Subclass begin() should call this to start TX wait thread */
+	void startTxThread(k_thread_stack_t *stack, size_t stack_size);
+
+	const struct device *_dev;
+	NodePrefs *_prefs;
+	MainBoard *_board;
+	volatile bool _in_recv_mode;
+	volatile bool _tx_active;
+	volatile float _last_rssi;
+	volatile float _last_snr;
+
+	/* RX ring buffer */
+	struct RxPacket {
+		uint8_t data[256];
+		uint16_t len;
+		int16_t rssi;
+		int8_t snr;
+	};
+	RxPacket _rx_ring[RX_RING_SIZE];
+	volatile uint8_t _rx_head;
+	volatile uint8_t _rx_tail;
+
+	/* TX buffer + signal */
+	uint8_t _tx_buf[256];
+	struct k_poll_signal _tx_signal;
+
+	/* Noise floor calibration state */
+	int _noise_floor;
+	int _calibration_threshold;
+
+	/* Power saving */
+	bool _rx_duty_cycle_enabled;
+	bool _rx_boost_enabled;
+
+	/* Static RX callback — passed to lora_recv_async() by subclass hwStartReceive() */
+	static void rxCallbackStatic(const struct device *dev, uint8_t *data,
+				     uint16_t size, int16_t rssi, int8_t snr,
+				     void *user_data);
+
+private:
+	/* RX notification callback */
+	RadioRxCallback _rx_cb;
+	void *_rx_cb_user_data;
+
+	/* TX done callback */
+	RadioTxDoneCallback _tx_done_cb;
+	void *_tx_done_cb_user_data;
+
+	/* TX completion thread */
+	static void txWaitThreadFn(void *p1, void *p2, void *p3);
+	struct k_thread _tx_wait_thread;
+	struct k_sem _tx_start_sem;
+	bool _tx_thread_running;
+
+	/* Packet statistics */
+	volatile uint32_t _packets_recv;
+	volatile uint32_t _packets_sent;
+	volatile uint32_t _packets_recv_errors;
+};
+
+} /* namespace mesh */
