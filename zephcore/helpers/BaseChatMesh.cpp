@@ -180,7 +180,6 @@ void BaseChatMesh::onAdvertRecv(mesh::Packet *packet, const mesh::Identity &id, 
 		populateContactFromAdvert(*from, id, parser, timestamp);
 		from->sync_since = 0;
 		from->shared_secret_valid = false;
-		is_new = true;
 	} else {
 		LOG_INF("onAdvertRecv: existing contact, updating");
 	}
