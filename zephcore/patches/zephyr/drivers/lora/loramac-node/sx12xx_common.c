@@ -394,6 +394,9 @@ int sx12xx_lora_config(const struct device *dev,
 		LOG_ERR("Unsupported bandwidth: %d", config->bandwidth);
 		return ret;
 	}
+	LOG_INF("lora_config: bw_enum=%d bw_idx=%u tx=%d freq=%u sf=%d",
+		config->bandwidth, bw_idx, config->tx, config->frequency,
+		config->datarate);
 
 	/* Ensure available, decremented after configuration */
 	if (!modem_acquire(&dev_data)) {
