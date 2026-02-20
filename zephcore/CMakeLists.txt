@@ -84,11 +84,17 @@ if(BOARD MATCHES ".*nrf52.*" OR BOARD MATCHES "rak4631" OR BOARD MATCHES "wio_tr
     set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf52_common.conf")
 elseif(DEFINED BOARD_QUALIFIERS AND BOARD_QUALIFIERS MATCHES ".*nrf52.*")
     set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf52_common.conf")
-elseif(BOARD MATCHES ".*esp32.*")
+elseif(BOARD MATCHES ".*esp32.*" OR BOARD MATCHES "station_g2")
+    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/esp32_common.conf")
+elseif(DEFINED BOARD_QUALIFIERS AND BOARD_QUALIFIERS MATCHES ".*esp32.*")
     set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/esp32_common.conf")
 elseif(BOARD MATCHES ".*nrf54l.*")
     set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf54l_common.conf")
+elseif(DEFINED BOARD_QUALIFIERS AND BOARD_QUALIFIERS MATCHES ".*nrf54l.*")
+    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf54l_common.conf")
 elseif(BOARD MATCHES ".*mg24.*" OR BOARD MATCHES ".*efr32.*")
+    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/mg24_common.conf")
+elseif(DEFINED BOARD_QUALIFIERS AND BOARD_QUALIFIERS MATCHES ".*mg24.*")
     set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/mg24_common.conf")
 else()
     set(ZEPHCORE_PLATFORM_CONF "")
@@ -137,11 +143,12 @@ else()
     endif()
 endif()
 
-# Append to EXTRA_CONF_FILE (preserves any user-specified extras)
-# Note: repeater.conf is passed via EXTRA_CONF_FILE on the command line when building repeater role
+# Append to EXTRA_CONF_FILE — auto-generated configs first, user extras last.
+# User-specified extras (repeater.conf, prod.conf) MUST come after the auto chain
+# so they can override settings (e.g. CONFIG_BT=n in repeater.conf).
 if(ZEPHCORE_CONF_FILES)
     if(EXTRA_CONF_FILE)
-        set(EXTRA_CONF_FILE "${EXTRA_CONF_FILE};${ZEPHCORE_CONF_FILES}" CACHE STRING "" FORCE)
+        set(EXTRA_CONF_FILE "${ZEPHCORE_CONF_FILES};${EXTRA_CONF_FILE}" CACHE STRING "" FORCE)
     else()
         set(EXTRA_CONF_FILE "${ZEPHCORE_CONF_FILES}" CACHE STRING "" FORCE)
     endif()
@@ -260,8 +267,9 @@ if(CONFIG_ZEPHCORE_ROLE_REPEATER)
     helpers/TransportKeyStore.cpp
     helpers/CommonCLI.cpp
   )
-  # USB CDC with 1200 baud touch detection (when not using auto-init)
-  if(NOT CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT)
+  # USB CDC with 1200 baud touch detection (nRF boards with USB CDC ACM only).
+  # ESP32 boards use usb_serial (no UDC/CDC ACM), so skip custom USB init.
+  if(NOT CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT AND (CONFIG_USB_CDC_ACM OR CONFIG_USBD_CDC_ACM_CLASS))
     target_sources(app PRIVATE
       adapters/usb/ZephyrRepeaterUSB.cpp
     )
@@ -321,6 +329,12 @@ if(CONFIG_ZEPHCORE_UI_BUTTONS OR CONFIG_ZEPHCORE_UI_BUZZER OR CONFIG_ZEPHCORE_UI
   target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/helpers/ui
   )
+  # Repeater builds need weak stubs for companion-only UI mesh actions
+  if(CONFIG_ZEPHCORE_ROLE_REPEATER)
+    target_sources(app PRIVATE
+      helpers/ui/ui_mesh_actions_stubs.c
+    )
+  endif()
 endif()
 
 if(CONFIG_ZEPHCORE_EASTER_EGG_DOOM)

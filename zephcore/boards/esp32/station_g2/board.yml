@@ -1,0 +1,6 @@
+board:
+  name: station_g2
+  full_name: BQ Station G2
+  vendor: bq
+  socs:
+    - name: esp32s3

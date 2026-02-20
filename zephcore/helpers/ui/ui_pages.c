@@ -145,6 +145,38 @@ void utf8_to_latin1(char *dst, const char *src, size_t dst_size)
 /* ========== Global State ========== */
 static struct ui_state state;
 
+/* ========== Active Pages (role-dependent) ========== */
+/* Repeater: minimal pages — status, radio, shutdown.
+ * Companion: full page set matching Arduino UI.
+ * Navigation walks this array instead of the raw enum. */
+
+#ifdef ZEPHCORE_REPEATER
+static const enum ui_page active_pages[] = {
+	UI_PAGE_STATUS,
+	UI_PAGE_RADIO,
+	UI_PAGE_SHUTDOWN,
+};
+#else
+static const enum ui_page active_pages[] = {
+	UI_PAGE_MESSAGES,
+	UI_PAGE_RECENT,
+	UI_PAGE_RADIO,
+	UI_PAGE_BLUETOOTH,
+	UI_PAGE_ADVERT,
+	UI_PAGE_GPS,
+	UI_PAGE_BUZZER,
+	UI_PAGE_SENSORS,
+	UI_PAGE_OFFGRID,
+	UI_PAGE_DFU,
+	UI_PAGE_SHUTDOWN,
+};
+#endif
+
+#define ACTIVE_PAGE_COUNT ((int)(sizeof(active_pages) / sizeof(active_pages[0])))
+
+/* Current index into active_pages[] */
+static int current_page_idx;
+
 /* ========== Helper: Battery Percentage from mV ========== */
 
 static uint8_t calc_battery_pct(uint16_t mv)
@@ -213,7 +245,7 @@ static void render_page_indicator(void)
 	/* Centered dots matching Arduino layout:
 	 * Each dot spaced 10px apart, centered on screen.
 	 * Current page = filled 3x3 block, others = single pixel. */
-	int total = UI_PAGE_COUNT;
+	int total = ACTIVE_PAGE_COUNT;
 	int dot_spacing = 10;
 	int total_width = (total - 1) * dot_spacing;
 	int start_x = (DISP_W - total_width) / 2;
@@ -221,7 +253,7 @@ static void render_page_indicator(void)
 	for (int i = 0; i < total; i++) {
 		int x = start_x + i * dot_spacing;
 
-		if (i == (int)state.current_page) {
+		if (i == current_page_idx) {
 			/* Current page: filled 3x3 block */
 			mc_display_fill_rect(x - 1, DOTS_Y, 3, 3);
 		} else {
@@ -582,6 +614,51 @@ static void render_shutdown(void)
 	}
 }
 
+static void render_status(void)
+{
+	char buf[28];
+	int y = CONTENT_Y;
+
+	/* Role label */
+	draw_centered(y, "REPEATER");
+	y += LINE_H;
+
+	/* Uptime */
+	uint32_t up_s = (uint32_t)(k_uptime_get() / 1000);
+	uint32_t days = up_s / 86400;
+	uint32_t hours = (up_s % 86400) / 3600;
+	uint32_t mins = (up_s % 3600) / 60;
+
+	snprintf(buf, sizeof(buf), "Up: %ud %uh %um", days, hours, mins);
+	mc_display_text(0, y, buf, false);
+	y += LINE_H;
+
+	/* Clock — only if RTC has been synced (after Jan 1 2025) */
+	if (state.rtc_epoch > 1735689600) {
+		uint32_t day_sec = state.rtc_epoch % 86400;
+		uint8_t hh = day_sec / 3600;
+		uint8_t mm = (day_sec % 3600) / 60;
+		uint8_t ss = day_sec % 60;
+
+		snprintf(buf, sizeof(buf), "Time: %02u:%02u:%02u UTC", hh, mm, ss);
+		mc_display_text(0, y, buf, false);
+	} else {
+		mc_display_text(0, y, "Time: not synced", false);
+	}
+	y += LINE_H;
+
+	/* Battery */
+	if (state.battery_mv > 0) {
+		uint8_t pct = state.battery_pct;
+
+		if (pct == 0) {
+			pct = calc_battery_pct(state.battery_mv);
+		}
+		snprintf(buf, sizeof(buf), "Batt: %u%% (%umV)", pct, state.battery_mv);
+		mc_display_text(0, y, buf, false);
+	}
+}
+
 /* ========== Page render dispatch ========== */
 
 typedef void (*page_render_fn)(void);
@@ -598,6 +675,7 @@ static const page_render_fn renderers[] = {
 	[UI_PAGE_OFFGRID]   = render_offgrid,
 	[UI_PAGE_DFU]       = render_dfu,
 	[UI_PAGE_SHUTDOWN]  = render_shutdown,
+	[UI_PAGE_STATUS]    = render_status,
 };
 
 /* ========== Public API ========== */
@@ -613,8 +691,10 @@ void ui_pages_render(void)
 	render_top_bar();
 	render_page_indicator();
 
-	if (state.current_page < UI_PAGE_COUNT && renderers[state.current_page]) {
-		renderers[state.current_page]();
+	enum ui_page page = active_pages[current_page_idx];
+
+	if (page < UI_PAGE_COUNT && renderers[page]) {
+		renderers[page]();
 	}
 
 	mc_display_finalize();
@@ -648,35 +728,41 @@ void ui_pages_render_splash(void)
 void ui_pages_next(void)
 {
 	state.shutdown_confirm_time = 0;  /* Reset confirmation on navigate */
-	int page = (int)state.current_page + 1;
-
-	if (page >= UI_PAGE_COUNT) {
-		page = 0;
+	current_page_idx++;
+	if (current_page_idx >= ACTIVE_PAGE_COUNT) {
+		current_page_idx = 0;
 	}
-	state.current_page = (enum ui_page)page;
+	state.current_page = active_pages[current_page_idx];
 }
 
 void ui_pages_prev(void)
 {
 	state.shutdown_confirm_time = 0;  /* Reset confirmation on navigate */
-	int page = (int)state.current_page - 1;
-
-	if (page < 0) {
-		page = UI_PAGE_COUNT - 1;
+	current_page_idx--;
+	if (current_page_idx < 0) {
+		current_page_idx = ACTIVE_PAGE_COUNT - 1;
 	}
-	state.current_page = (enum ui_page)page;
+	state.current_page = active_pages[current_page_idx];
 }
 
 void ui_pages_set(enum ui_page page)
 {
-	if (page < UI_PAGE_COUNT) {
-		state.current_page = page;
+	/* Find page in active list, fall back to first active page */
+	for (int i = 0; i < ACTIVE_PAGE_COUNT; i++) {
+		if (active_pages[i] == page) {
+			current_page_idx = i;
+			state.current_page = page;
+			return;
+		}
 	}
+	/* Page not in active list — go to first active page */
+	current_page_idx = 0;
+	state.current_page = active_pages[0];
 }
 
 enum ui_page ui_pages_current(void)
 {
-	return state.current_page;
+	return active_pages[current_page_idx];
 }
 
 void ui_pages_set_node_name(const char *name)

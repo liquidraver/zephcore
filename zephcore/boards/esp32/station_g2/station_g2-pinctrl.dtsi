@@ -1,0 +1,51 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * BQ Station G2 — Pin Control Definitions
+ *
+ * Pin mapping (from Arduino MeshCore variants/station_g2):
+ *   LoRa SPI2:  SCLK=GPIO12, MOSI=GPIO13, MISO=GPIO14, NSS=GPIO11
+ *   I2C0:       SDA=GPIO5,   SCL=GPIO6   (SH1106 OLED + sensors)
+ *   UART1:      TX=GPIO7,    RX=GPIO15   (GPS)
+ *   Console:    USB Serial (native ESP32-S3 USB)
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+
+&pinctrl {
+	/* SPI2 — LoRa SX1262 (CS handled via cs-gpios, not pinctrl) */
+	spim2_default: spim2_default {
+		group1 {
+			pinmux = <SPIM2_MISO_GPIO14>,
+				 <SPIM2_SCLK_GPIO12>;
+		};
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO13>;
+			output-low;
+		};
+	};
+
+	/* I2C0 — SH1106 OLED display + optional I2C sensors */
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO5>,
+				 <I2C0_SCL_GPIO6>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+
+	/* UART1 — GPS module */
+	uart1_default: uart1_default {
+		group1 {
+			pinmux = <UART1_TX_GPIO7>;
+			output-high;
+		};
+		group2 {
+			pinmux = <UART1_RX_GPIO15>;
+			bias-pull-up;
+		};
+	};
+};

@@ -1,0 +1,119 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * BQ Station G2 — ZephCore overlay
+ *
+ * Adds LoRa radio, display, GPS, button, and filesystem on top of the
+ * base board DTS. Pin mapping from Arduino MeshCore variants/station_g2.
+ *
+ * LoRa SPI2 pins:  SCLK=12, MOSI=13, MISO=14, NSS=11
+ * LoRa control:    DIO1=48, RESET=21, BUSY=47
+ * Display I2C0:    SDA=5, SCL=6 (SH1106 @ 0x3C)
+ * GPS UART1:       TX=7, RX=15
+ * Button:          GPIO38
+ */
+
+/ {
+	aliases {
+		lora0 = &lora;
+		sw0 = &user_button;
+	};
+
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+		zephyr,display = &oled;
+	};
+
+	buttons: buttons {
+		compatible = "gpio-keys";
+		user_button: user_button {
+			gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;  /* GPIO38 = gpio1 pin 6 */
+			label = "User Button";
+			zephyr,code = <INPUT_BTN_0>;
+		};
+	};
+};
+
+/* SX1262 + PA on SPI2 */
+&spi2 {
+	cs-gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;  /* NSS = GPIO11 */
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		reset-gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;               /* RESET = GPIO21 */
+		busy-gpios  = <&gpio1 15 GPIO_ACTIVE_HIGH>;               /* BUSY  = GPIO47 = gpio1 pin 15 */
+		dio1-gpios  = <&gpio1 16 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;  /* DIO1  = GPIO48 = gpio1 pin 16 */
+
+		/* DIO2 controls RF switch for TX */
+		dio2-tx-enable;
+
+		/* TCXO 1.8 V via DIO3 (value 2 = 1.8 V in Zephyr SX126x driver) */
+		dio3-tcxo-voltage = <2>;
+		tcxo-power-startup-delay-ms = <10>;
+
+		/*
+		 * RX boosted mode DISABLED — Station G2 wiki warns against it:
+		 * "Impact of LoRa node dense areas/high noise environments on RF performance"
+		 * https://wiki.uniteng.com/en/meshtastic/station-g2
+		 */
+	};
+};
+
+/* SH1106 128x64 OLED on I2C0 */
+&i2c0 {
+	oled: sh1106@3c {
+		compatible = "sinowealth,sh1106";
+		reg = <0x3c>;
+		width = <128>;
+		height = <64>;
+		segment-offset = <2>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <63>;
+		prechargep = <0x22>;
+		segment-remap;
+		com-invdir;
+	};
+
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+/* GPS on UART1 (already enabled in DTS with 9600 baud) */
+&uart1 {
+	gnss: gnss-nmea-generic {
+		compatible = "gnss-nmea-generic";
+	};
+};
+
+/*
+ * Flash partitions — repartition default ESP32-S3 16 MB layout.
+ * Default storage_partition is 192 KB at 0xFB0000.
+ * Delete unused partitions (lpcore, scratch, coredump) to reclaim space.
+ * Split into: NVS 8 KB (BLE bonds) + LittleFS 376 KB (DataStore).
+ */
+/delete-node/ &slot0_lpcore_partition;
+/delete-node/ &slot1_lpcore_partition;
+/delete-node/ &storage_partition;
+/delete-node/ &scratch_partition;
+/delete-node/ &coredump_partition;
+
+&flash0 {
+	partitions {
+		/* NVS 8 KB for BLE bonds + settings */
+		storage_partition: partition@fa0000 {
+			label = "storage";
+			reg = <0xFA0000 0x2000>;
+		};
+
+		/* LittleFS 376 KB for DataStore (identity, contacts, channels, etc.) */
+		lfs_partition: partition@fa2000 {
+			label = "lfs";
+			reg = <0xFA2000 0x5E000>;
+		};
+	};
+};
+
+/* LittleFS auto-mount — standard /lfs mount point */
+#include "../../common/filesystem.dtsi"

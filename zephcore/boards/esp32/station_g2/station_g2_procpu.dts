@@ -1,0 +1,89 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * BQ Station G2 — ESP32-S3, 16MB flash, 8MB PSRAM
+ *
+ * Hardware:
+ *   MCU:     ESP32-S3 (Xtensa LX7, dual-core @ 80 MHz)
+ *   Flash:   16 MB (QIO)
+ *   PSRAM:   8 MB (OPI)
+ *   Radio:   SX1262 + PA (~27 dBm output) on SPI2
+ *   Display: SH1106 128x64 OLED on I2C0
+ *   GPS:     NMEA on UART1
+ *   Button:  GPIO38
+ *   Console: Native USB Serial
+ */
+
+/dts-v1/;
+
+#include <espressif/esp32s3/esp32s3_wroom_n16r8.dtsi>
+#include "station_g2-pinctrl.dtsi"
+#include <espressif/partitions_0x0_default_16M.dtsi>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/ {
+	model = "BQ Station G2";
+	compatible = "bq,station-g2";
+
+	chosen {
+		zephyr,sram = &sram1;
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,bt-hci = &esp32_bt_hci;
+	};
+
+	aliases {
+		uart-0 = &uart0;
+		i2c-0 = &i2c0;
+		watchdog0 = &wdt0;
+	};
+};
+
+/* Reduce CPU clock from 240 MHz to 80 MHz — plenty for mesh node, saves power */
+&cpu0 {
+	clock-frequency = <DT_FREQ_M(80)>;
+};
+
+&cpu1 {
+	clock-frequency = <DT_FREQ_M(80)>;
+};
+
+&usb_serial {
+	status = "okay";
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+};
+
+&spi2 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-0 = <&spim2_default>;
+	pinctrl-names = "default";
+};
+
+&uart1 {
+	status = "okay";
+	current-speed = <9600>;
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-names = "default";
+};
+
+&gpio0 { status = "okay"; };
+&gpio1 { status = "okay"; };
+&wdt0 { status = "okay"; };
+&trng0 { status = "okay"; };
+
+&esp32_bt_hci {
+	status = "okay";
+};
+
+&wifi {
+	status = "okay";
+};

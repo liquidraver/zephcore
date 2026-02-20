@@ -31,6 +31,7 @@ enum ui_page {
 	UI_PAGE_OFFGRID,        /* Offgrid mode (client repeat) toggle */
 	UI_PAGE_DFU,            /* BLE DFU bootloader entry */
 	UI_PAGE_SHUTDOWN,       /* Hibernate / power off */
+	UI_PAGE_STATUS,         /* Repeater status (uptime, time, packets) */
 	UI_PAGE_COUNT
 };
 

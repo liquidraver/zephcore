@@ -20,7 +20,18 @@ LOG_MODULE_REGISTER(zephcore_repeater_main, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/drivers/hwinfo.h>
+#include <zephyr/sys/reboot.h>
 #include "oled_power.h"
+
+/* BLE controller assert handler — BT is compiled even for repeater (via zephcore_common.conf) */
+#if IS_ENABLED(CONFIG_BT_CTLR_ASSERT_HANDLER)
+extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
+{
+	LOG_ERR("!!! BLE CONTROLLER ASSERT: %s:%u !!!", file ? file : "?", line);
+	k_sleep(K_MSEC(100));
+	sys_reboot(SYS_REBOOT_COLD);
+}
+#endif
 
 /* USB CDC with 1200 baud touch detection (when not using auto-init) */
 #if !IS_ENABLED(CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT)
@@ -31,6 +42,9 @@ LOG_MODULE_REGISTER(zephcore_repeater_main, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 #include <app/RepeaterMesh.h>
 #include <adapters/clock/ZephyrRTCClock.h>
 #include <ZephyrSensorManager.h>
+
+/* UI subsystem (display, buttons, buzzer) */
+#include "ui_task.h"
 
 /* Radio + mesh includes (shared header selects LR1110 or SX126x) */
 #include <mesh/RadioIncludes.h>
@@ -240,6 +254,12 @@ static void repeater_event_loop(void)
 			repeater_mesh_ptr->loop();
 		}
 #endif
+
+		/* Update display clock on housekeeping tick (if display is on) */
+		if (events & MESH_EVENT_HOUSEKEEPING) {
+			ui_set_clock(rtc_clock.getCurrentTime());
+			ui_refresh_display();
+		}
 	}
 }
 
@@ -279,8 +299,10 @@ int main(void)
 		gps_set_repeater_mode(true);
 	}
 
-	/* Put OLED display to sleep */
-	oled_sleep();
+	/* Initialize UI (display + buttons).  Shows splash screen, then auto-
+	 * transitions to STATUS page.  Display sleeps after auto-off timeout;
+	 * user button is the only wake source for repeater. */
+	ui_init();
 
 	/* Log environment sensor availability */
 	if (env_sensors_available()) {
@@ -337,16 +359,31 @@ int main(void)
 	/* Apply RX boost setting from prefs (overrides radio default if user changed it) */
 	lora_radio.setRxBoost(prefs->rx_boost != 0);
 
+	/* Feed initial UI state from loaded prefs */
+	ui_set_node_name(prefs->node_name);
+	ui_set_radio_params(
+		(uint32_t)(prefs->freq * 1000000.0f),  /* MHz → Hz */
+		prefs->sf,
+		(uint16_t)(prefs->bw * 10.0f),         /* kHz → 0.1 kHz */
+		prefs->cr,
+		prefs->tx_power_dbm,
+		lora_radio.getNoiseFloor());
+
 	/* Send initial zero-hop advertisement after boot */
 	LOG_INF("Sending initial advertisement...");
 	repeater_mesh.sendSelfAdvertisement(500, false);  /* 500ms delay, zero-hop */
 #endif
 
-	/* Initialize USB CDC for CLI with 1200 baud touch detection */
-#if !IS_ENABLED(CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT)
+	/* Initialize USB serial for CLI */
+#if !IS_ENABLED(CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT) && DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart)
 	zephcore_usbd_init();
 #endif
+#if DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart)
 	usb_dev = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
+#else
+	/* No CDC ACM (e.g. ESP32 usb_serial) — use chosen console UART */
+	usb_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+#endif
 	if (device_is_ready(usb_dev)) {
 		LOG_INF("USB CDC device ready: %s", usb_dev->name);
 		ring_buf_init(&usb_ring_buf, sizeof(usb_ring_buf_data), usb_ring_buf_data);

@@ -213,8 +213,12 @@ static void splash_work_handler(struct k_work *work)
 	splash_active = false;
 
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-	/* Transition from splash to home page */
+	/* Transition from splash to home page (first active page for this role) */
+#ifdef ZEPHCORE_REPEATER
+	ui_pages_set(UI_PAGE_STATUS);
+#else
 	ui_pages_set(UI_PAGE_MESSAGES);
+#endif
 	k_work_reschedule(&render_work, K_NO_WAIT);
 #endif
 }
@@ -611,7 +615,11 @@ static void ui_input_cb(struct input_event *evt, void *user_data)
 		k_work_cancel_delayable(&splash_work);
 		splash_active = false;
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
+#ifdef ZEPHCORE_REPEATER
+		ui_pages_set(UI_PAGE_STATUS);
+#else
 		ui_pages_set(UI_PAGE_MESSAGES);
+#endif
 #endif
 		schedule_render();
 		return;
@@ -718,6 +726,9 @@ int ui_init(void)
 		splash_active = true;
 		ui_pages_render_splash();
 
+		/* Start auto-off timer so display sleeps after timeout */
+		mc_display_reset_auto_off();
+
 		/* Schedule transition to home page */
 		k_work_reschedule(&splash_work, K_MSEC(SPLASH_DURATION_MS));
 	} else if (ret == -ENODEV) {
@@ -817,13 +828,16 @@ void ui_notify(enum ui_event event)
 		break;
 	}
 
-	/* Wake display on notifications — but skip for incoming messages
-	 * when a phone is connected (phone handles its own notifications). */
+	/* Wake display on notifications.
+	 * Repeater: never wake display on events — only user button wakes it.
+	 * Companion: wake unless phone is connected (phone handles its own). */
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
+#ifndef ZEPHCORE_REPEATER
 	if (!(is_msg_event && get_state()->ble_connected)) {
 		mc_display_on();
 		schedule_render();
 	}
+#endif
 #endif
 }
 
