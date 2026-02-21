@@ -236,7 +236,7 @@ void CommonCLI::scheduleReboot(uint8_t type)
 
 void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, char* reply) {
     if (strcmp(command, "start dfu") == 0) {
-        /* Reboot into UF2 mass storage bootloader for firmware update */
+        /* Reboot into UF2 bootloader for firmware update */
         strcpy(reply, "OK - rebooting to UF2 DFU");
         scheduleReboot(REBOOT_DFU);
     } else if (memcmp(command, "start ota", 9) == 0) {

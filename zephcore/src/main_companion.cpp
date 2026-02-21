@@ -541,6 +541,12 @@ int main(void)
 	/* Start mesh */
 	companion_mesh.begin();
 
+	/* Redirect radio prefs pointer to the live companion_mesh.prefs.
+	 * The radio was constructed with &temp_prefs (a one-time copy needed
+	 * for static init).  After begin(), point at the real prefs so that
+	 * CMD_SET_RADIO_PARAMS changes are visible to lora_radio.reconfigure(). */
+	lora_radio.setPrefs(&companion_mesh.prefs);
+
 	/* Push initial state to UI display */
 	ui_set_node_name(companion_mesh.prefs.node_name);
 	ui_set_radio_params(

@@ -57,9 +57,27 @@ USBD_CONFIGURATION_DEFINE(zephcore_hs_config,
 /* ZephyrBoard instance for bootloader entry */
 static mesh::ZephyrBoard usb_board;
 
+/* Track DTR state for Arduino-style 1200 baud touch detection.
+ * Arduino triggers on DTR drop (high→low) while baud rate is 1200.
+ * adafruit-nrfutil --touch 1200 opens port at 1200 baud (DTR high),
+ * then closes it (DTR low). We detect both the baud rate change and
+ * the DTR drop to cover all host tool implementations. */
+static bool dtr_was_active;
+
+static void enter_bootloader(void)
+{
+	LOG_WRN("Entering bootloader (1200 baud touch)");
+	/* Small delay to let USB disconnect cleanly */
+	k_msleep(100);
+	usb_board.rebootToBootloader();
+	/* Never returns */
+}
+
 /*
  * USB message callback - detect 1200 baud touch for bootloader entry.
- * Arduino uses this method: when host opens port at 1200 baud, enter DFU.
+ * Two detection methods (matching Arduino behavior):
+ *   1. Baud rate set to 1200 (SET_LINE_CODING)
+ *   2. DTR drop while baud is 1200 (SET_CONTROL_LINE_STATE)
  */
 static void usbd_msg_callback(struct usbd_context *const ctx, const struct usbd_msg *msg)
 {
@@ -67,15 +85,22 @@ static void usbd_msg_callback(struct usbd_context *const ctx, const struct usbd_
 		uint32_t baudrate = 0;
 		int ret = uart_line_ctrl_get(msg->dev, UART_LINE_CTRL_BAUD_RATE, &baudrate);
 		if (ret == 0) {
-			LOG_DBG("CDC ACM baud rate change: %u", baudrate);
+			LOG_INF("CDC ACM baud rate: %u", baudrate);
 			if (baudrate == 1200) {
-				LOG_INF("1200 baud touch detected - entering bootloader");
-				/* Small delay to let USB disconnect cleanly */
-				k_msleep(100);
-				usb_board.rebootToBootloader();
-				/* Never returns */
+				enter_bootloader();
 			}
 		}
+	} else if (msg->type == USBD_MSG_CDC_ACM_CONTROL_LINE_STATE) {
+		uint32_t dtr = 0;
+		uint32_t baudrate = 0;
+		uart_line_ctrl_get(msg->dev, UART_LINE_CTRL_DTR, &dtr);
+		uart_line_ctrl_get(msg->dev, UART_LINE_CTRL_BAUD_RATE, &baudrate);
+		LOG_INF("CDC ACM DTR=%u baud=%u", dtr, baudrate);
+		/* Arduino method: DTR drop (high→low) while baud is 1200 */
+		if (dtr_was_active && !dtr && baudrate == 1200) {
+			enter_bootloader();
+		}
+		dtr_was_active = (dtr != 0);
 	}
 }
 

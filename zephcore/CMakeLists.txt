@@ -19,6 +19,8 @@ cmake_minimum_required(VERSION 3.20.0)
 #   - dts/bindings/lora/semtech,lr1110.yaml: LR1110 DTS binding
 #   - drivers/gnss/gnss_luatos_air530z.c: EASY ephemeris prediction (PMTK869)
 #   - drivers/gnss/Kconfig.luatos_air530z: CONFIG_GNSS_LUATOS_AIR530Z_EASY
+#   - drivers/lora/native/sx126x/sx126x.c: fix rx-enable-gpios not toggled
+#     when dio2-tx-enable is set (breaks E22-900M30S and similar PA modules)
 #   modules/:
 #   - lib/loramac-node/src/radio/sx126x/radio.c: restore full 10-element
 #     Bandwidths[] array + fix LDRO for sub-125kHz bandwidths

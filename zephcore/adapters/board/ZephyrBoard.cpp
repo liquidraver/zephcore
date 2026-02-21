@@ -12,8 +12,9 @@
 #if defined(CONFIG_SOC_SERIES_NRF52X) || defined(CONFIG_SOC_SERIES_NRF52)
 #include <hal/nrf_power.h>
 /* Adafruit bootloader GPREGRET magic values */
-#define BOOTLOADER_DFU_UF2_MAGIC  0x57  /* Enter UF2 mass storage mode */
-#define BOOTLOADER_DFU_OTA_MAGIC  0xA8  /* Enter BLE OTA DFU mode */
+#define BOOTLOADER_DFU_SERIAL_MAGIC 0x4e  /* Enter serial DFU mode (CDC only) */
+#define BOOTLOADER_DFU_UF2_MAGIC    0x57  /* Enter UF2 mass storage mode (CDC + MSC) */
+#define BOOTLOADER_DFU_OTA_MAGIC    0xA8  /* Enter BLE OTA DFU mode */
 #define NRF52_GPREGRET 1
 #endif
 
@@ -150,7 +151,8 @@ void ZephyrBoard::reboot()
 void ZephyrBoard::rebootToBootloader()
 {
 #ifdef NRF52_GPREGRET
-	/* Write magic value to GPREGRET0 - enter UF2 mass storage mode */
+	/* Write magic value to GPREGRET0 - enter UF2 bootloader mode.
+	 * UF2 supports both drag-and-drop (.uf2) and serial DFU (nrfutil). */
 	nrf_power_gpregret_set(NRF_POWER, 0, BOOTLOADER_DFU_UF2_MAGIC);
 #endif
 	k_msleep(50);  /* Let UART/USB flush */
