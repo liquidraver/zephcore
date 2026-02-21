@@ -186,6 +186,11 @@ void LoRaRadioBase::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 	cfg.preamble_len = LoRaConfig::PREAMBLE_LEN;
 	cfg.tx_power = _prefs ? (int8_t)_prefs->tx_power_dbm
 			      : LoRaConfig::TX_POWER_DBM;
+#ifdef CONFIG_ZEPHCORE_MAX_TX_POWER_DBM
+	if (cfg.tx_power > CONFIG_ZEPHCORE_MAX_TX_POWER_DBM) {
+		cfg.tx_power = CONFIG_ZEPHCORE_MAX_TX_POWER_DBM;
+	}
+#endif
 	cfg.tx = tx;
 	cfg.iq_inverted = false;
 	cfg.public_network = false;

@@ -90,7 +90,11 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->bw = 62.5f;                // LoRaConfig::BANDWIDTH
 	prefs->sf = 8;                    // LoRaConfig::SPREADING_FACTOR
 	prefs->cr = 8;                    // CR 4/8 (MeshCore uses 5-8 for CR 4/5 through 4/8)
+#ifdef CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM
+	prefs->tx_power_dbm = CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM;
+#else
 	prefs->tx_power_dbm = 22;         // LoRaConfig::TX_POWER_DBM
+#endif
 	prefs->disable_fwd = 0;
 	prefs->advert_interval = 60;      // 2 minutes (value / 2)
 	prefs->flood_advert_interval = 12; // 12 hours

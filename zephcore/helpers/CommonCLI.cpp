@@ -111,6 +111,11 @@ void CommonCLI::loadPrefs(const char* path) {
     _prefs->sf = constrain(_prefs->sf, (uint8_t)5, (uint8_t)12);
     _prefs->cr = constrain(_prefs->cr, (uint8_t)5, (uint8_t)8);
     _prefs->tx_power_dbm = constrain(_prefs->tx_power_dbm, (uint8_t)1, (uint8_t)30);
+#ifdef CONFIG_ZEPHCORE_MAX_TX_POWER_DBM
+    if (_prefs->tx_power_dbm > CONFIG_ZEPHCORE_MAX_TX_POWER_DBM) {
+        _prefs->tx_power_dbm = (uint8_t)CONFIG_ZEPHCORE_MAX_TX_POWER_DBM;
+    }
+#endif
     _prefs->multi_acks = constrain(_prefs->multi_acks, (uint8_t)0, (uint8_t)1);
     _prefs->adc_multiplier = constrain(_prefs->adc_multiplier, 0.0f, 10.0f);
     _prefs->powersaving_enabled = constrain(_prefs->powersaving_enabled, (uint8_t)0, (uint8_t)1);
@@ -317,7 +322,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
     } else if (memcmp(command, "get ", 4) == 0) {
         const char* config = &command[4];
         if (memcmp(config, "af", 2) == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %.0f%%", (double)_prefs->airtime_factor);
+            int dc = (_prefs->airtime_factor == 0.0f) ? 100 : (int)_prefs->airtime_factor;
+            snprintf(reply, CLI_REPLY_SIZE, "> Duty Cycle: %d%%", dc);
         } else if (memcmp(config, "int.thresh", 10) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->interference_threshold);
         } else if (memcmp(config, "agc.reset.interval", 18) == 0) {
@@ -391,9 +397,15 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
     } else if (memcmp(command, "set ", 4) == 0) {
         const char* config = &command[4];
         if (memcmp(config, "af ", 3) == 0) {
-            _prefs->airtime_factor = atof(&config[3]);
+            int val = atoi(&config[3]);
+            if (val <= 0 || val >= 100) {
+                _prefs->airtime_factor = 0.0f;
+            } else {
+                _prefs->airtime_factor = (float)val;
+            }
             savePrefs();
-            strcpy(reply, "OK");
+            int dc = (_prefs->airtime_factor == 0.0f) ? 100 : (int)_prefs->airtime_factor;
+            snprintf(reply, CLI_REPLY_SIZE, "Duty Cycle set: %d%%", dc);
         } else if (memcmp(config, "int.thresh ", 11) == 0) {
             _prefs->interference_threshold = atoi(&config[11]);
             savePrefs();
@@ -532,10 +544,16 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             savePrefs();
             strcpy(reply, "OK");
         } else if (memcmp(config, "tx ", 3) == 0) {
-            _prefs->tx_power_dbm = atoi(&config[3]);
+            int val = atoi(&config[3]);
+#ifdef CONFIG_ZEPHCORE_MAX_TX_POWER_DBM
+            if (val > CONFIG_ZEPHCORE_MAX_TX_POWER_DBM) {
+                val = CONFIG_ZEPHCORE_MAX_TX_POWER_DBM;
+            }
+#endif
+            _prefs->tx_power_dbm = (uint8_t)val;
             savePrefs();
             _callbacks->setTxPower(_prefs->tx_power_dbm);
-            strcpy(reply, "OK");
+            snprintf(reply, CLI_REPLY_SIZE, "OK - tx power=%u dBm", (uint32_t)_prefs->tx_power_dbm);
         } else if (sender_timestamp == 0 && memcmp(config, "freq ", 5) == 0) {
             _prefs->freq = atof(&config[5]);
             savePrefs();

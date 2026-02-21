@@ -256,6 +256,24 @@ config ZEPHCORE_RADIO_LR1110
 
 endchoice
 
+config ZEPHCORE_DEFAULT_TX_POWER_DBM
+	int "Default TX power (dBm)"
+	default 22
+	range -9 22
+	help
+	  Default SX1262 TX power in dBm for fresh devices (no saved prefs).
+	  Boards with external PA should set this lower to avoid overdriving.
+	  Example: Station G2 with 20dB PA gain uses 15 dBm (→ 35 dBm output).
+
+config ZEPHCORE_MAX_TX_POWER_DBM
+	int "Maximum TX power (dBm)"
+	default 22
+	range -9 22
+	help
+	  Hard cap on SX1262 TX power. The radio adapter clamps any value
+	  above this, protecting external PAs from damage.
+	  Example: Station G2 caps at 19 dBm to stay below PA P1dB (35 dBm).
+
 endmenu # Radio Configuration
 
 menu "Board Configuration"
