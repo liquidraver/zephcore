@@ -1,0 +1,75 @@
+diff --git a/src/radio/sx126x/radio.c b/src/radio/sx126x/radio.c
+index c4a40dab..bf6b4c9b 100644
+--- a/src/radio/sx126x/radio.c
++++ b/src/radio/sx126x/radio.c
+@@ -421,7 +421,26 @@ const FskBandwidth_t FskBandwidths[] =
+     { 500000, 0x00 }, // Invalid Bandwidth
+ };
+ 
+-const RadioLoRaBandwidths_t Bandwidths[] = { LORA_BW_125, LORA_BW_250, LORA_BW_500 };
++/*
++ * ZephCore patch: restore full 10-element Bandwidths array.
++ * Upstream Zephyr reduced this to {125, 250, 500} but the Zephyr LoRa API
++ * now defines enums for all bandwidths (BW_7_KHZ through BW_500_KHZ).
++ * sx12xx_common.c maps these enums to indices into this array, so all 10
++ * entries must be present to avoid out-of-bounds access.
++ */
++const RadioLoRaBandwidths_t Bandwidths[] =
++{
++    LORA_BW_007,
++    LORA_BW_010,
++    LORA_BW_015,
++    LORA_BW_020,
++    LORA_BW_031,
++    LORA_BW_041,
++    LORA_BW_062,
++    LORA_BW_125,
++    LORA_BW_250,
++    LORA_BW_500,
++};
+ 
+ uint8_t MaxPayloadLength = 0xFF;
+ 
+@@ -702,8 +721,14 @@ void RadioSetRxConfig( RadioModems_t modem, uint32_t bandwidth,
+             SX126x.ModulationParams.Params.LoRa.Bandwidth = Bandwidths[bandwidth];
+             SX126x.ModulationParams.Params.LoRa.CodingRate = ( RadioLoRaCodingRates_t )coderate;
+ 
+-            if( ( ( bandwidth == 0 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
+-            ( ( bandwidth == 1 ) && ( datarate == 12 ) ) )
++            /*
++             * ZephCore patch: LDRO check updated for 10-element Bandwidths[].
++             * Enable LDRO when symbol duration > 16ms.
++             * Old indices (0=125k,1=250k) → new (7=125k,8=250k,6=62.5k, etc.)
++             */
++            if( ( ( bandwidth == 7 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
++            ( ( bandwidth == 8 ) && ( datarate == 12 ) ) ||
++            ( ( bandwidth <= 6 ) && ( datarate >= 10 ) ) )
+             {
+                 SX126x.ModulationParams.Params.LoRa.LowDatarateOptimize = 0x01;
+             }
+@@ -809,8 +834,10 @@ void RadioSetTxConfig( RadioModems_t modem, int8_t power, uint32_t fdev,
+             SX126x.ModulationParams.Params.LoRa.Bandwidth =  Bandwidths[bandwidth];
+             SX126x.ModulationParams.Params.LoRa.CodingRate= ( RadioLoRaCodingRates_t )coderate;
+ 
+-            if( ( ( bandwidth == 0 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
+-            ( ( bandwidth == 1 ) && ( datarate == 12 ) ) )
++            /* ZephCore patch: LDRO check updated for 10-element Bandwidths[] */
++            if( ( ( bandwidth == 7 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
++            ( ( bandwidth == 8 ) && ( datarate == 12 ) ) ||
++            ( ( bandwidth <= 6 ) && ( datarate >= 10 ) ) )
+             {
+                 SX126x.ModulationParams.Params.LoRa.LowDatarateOptimize = 0x01;
+             }
+@@ -946,8 +973,10 @@ static uint32_t RadioGetLoRaTimeOnAirNumerator( uint32_t bandwidth,
+         }
+     }
+ 
+-    if( ( ( bandwidth == 0 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
+-        ( ( bandwidth == 1 ) && ( datarate == 12 ) ) )
++    /* ZephCore patch: LDRO check updated for 10-element Bandwidths[] */
++    if( ( ( bandwidth == 7 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
++        ( ( bandwidth == 8 ) && ( datarate == 12 ) ) ||
++        ( ( bandwidth <= 6 ) && ( datarate >= 10 ) ) )
+     {
+         lowDatareOptimize = true;
+     }

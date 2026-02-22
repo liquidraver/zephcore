@@ -1,0 +1,20 @@
+diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
+index 8e0ca45c271..828faaaf37f 100644
+--- a/drivers/lora/native/sx126x/sx126x.c
++++ b/drivers/lora/native/sx126x/sx126x.c
+@@ -451,7 +451,14 @@ static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
+ 	const struct sx126x_hal_config *config = dev->config;
+ 
+ 	sx126x_hal_set_antenna_enable(dev, enable);
+-	if (!config->dio2_tx_enable) {
++	if (config->dio2_tx_enable) {
++		/* DIO2 handles TX enable in hardware — but rx-enable-gpios
++		 * (e.g. E22-900M30S RXEN) still needs explicit GPIO control.
++		 * RXEN HIGH when receiving, LOW otherwise. */
++		if (config->rx_enable.port != NULL) {
++			gpio_pin_set_dt(&config->rx_enable, enable && !tx);
++		}
++	} else {
+ 		sx126x_hal_set_rf_switch(dev, enable && tx);
+ 	}
+ }

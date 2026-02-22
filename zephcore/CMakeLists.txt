@@ -4,56 +4,128 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 # ============================================================================
-# Zephyr Patch Auto-Apply
+# Zephyr Patch Auto-Apply (unified diffs via git apply)
 # ============================================================================
-# Patches stored in zephcore/patches/zephyr/ are copied to Zephyr source tree
-# at configure time. This survives `west update` - patches are reapplied on
-# next build.
+# Patches are applied at configure time using `git apply`. This means:
+#   - If upstream changed in a conflicting area → build FAILS with clear error
+#   - If upstream changed in non-conflicting areas → changes are preserved
+#   - Idempotent: re-running cmake without west update detects already-applied patches
 #
-# Current patches:
-#   zephyr/:
-#   - drivers/lora/loramac-node/sx12xx_common.c: bandwidth enum→index mapping
-#   - drivers/lora/lr11xx/*: LR11xx Zephyr LoRa driver (for future upstream PR)
-#   - drivers/lora/CMakeLists.txt: adds lr11xx subdirectory
-#   - drivers/lora/Kconfig: adds lr11xx Kconfig
-#   - dts/bindings/lora/semtech,lr1110.yaml: LR1110 DTS binding
-#   - drivers/gnss/gnss_luatos_air530z.c: EASY ephemeris prediction (PMTK869)
-#   - drivers/gnss/Kconfig.luatos_air530z: CONFIG_GNSS_LUATOS_AIR530Z_EASY
-#   - drivers/lora/native/sx126x/sx126x.c: fix rx-enable-gpios not toggled
-#     when dio2-tx-enable is set (breaks E22-900M30S and similar PA modules)
-#   modules/:
-#   - lib/loramac-node/src/radio/sx126x/radio.c: restore full 10-element
-#     Bandwidths[] array + fix LDRO for sub-125kHz bandwidths
+# Directory layout:
+#   patches/zephyr/*.patch       - unified diffs applied to the Zephyr tree
+#   patches/zephyr-new/          - new files copied to the Zephyr tree (no upstream)
+#   patches/loramac-node/*.patch - unified diffs for modules/lib/loramac-node
+#   patches/espressif/*.patch    - unified diffs for modules/hal/espressif
 #
+# Zephyr patches:
+#   0001-lora-lr11xx-build       - CMakeLists.txt + Kconfig (lr11xx subdirectory)
+#   0002-lora-sx12xx-common      - RX error callback, bandwidth mapping, fast TX/RX
+#   0003-lora-sx126x-native      - PA module RF switch fix (dio2-tx-enable)
+#   0004-lora-sx126x-standalone  - DIO1 IRQ error logging
+#   0005-gnss-air530z-easy       - EASY ephemeris prediction (PMTK869) + Kconfig
+#   0006-blobs-py                - west blobs command fix
+# New files (copied, not patched):
+#   drivers/lora/lr11xx/*        - LR11xx Zephyr LoRa driver
+#   dts/bindings/lora/semtech,lr1110.yaml - LR1110 DTS binding
+# Module patches:
+#   loramac-node: restore 10-element Bandwidths[] + LDRO fix
+#   espressif: MCUboot config flexibility (mbedtls, validation, sector count)
+#
+
+# --- Helper: apply unified diff patches via git apply ---
+function(zephcore_apply_patches PATCH_DIR TARGET_DIR LABEL)
+    file(GLOB PATCH_FILES "${PATCH_DIR}/*.patch")
+    list(SORT PATCH_FILES)
+    foreach(PATCH_FILE ${PATCH_FILES})
+        get_filename_component(PATCH_NAME ${PATCH_FILE} NAME)
+        # Check if already applied (idempotent for re-configure without west update)
+        execute_process(
+            COMMAND git apply --reverse --check "${PATCH_FILE}"
+            WORKING_DIRECTORY "${TARGET_DIR}"
+            RESULT_VARIABLE ALREADY_APPLIED
+            OUTPUT_QUIET ERROR_QUIET
+        )
+        if(ALREADY_APPLIED EQUAL 0)
+            message(STATUS "  [${LABEL}] Already applied: ${PATCH_NAME}")
+            continue()
+        endif()
+        # Verify patch applies cleanly
+        execute_process(
+            COMMAND git apply --check "${PATCH_FILE}"
+            WORKING_DIRECTORY "${TARGET_DIR}"
+            RESULT_VARIABLE PATCH_CHECK
+            ERROR_VARIABLE PATCH_ERR
+        )
+        if(NOT PATCH_CHECK EQUAL 0)
+            message(FATAL_ERROR
+                "ZephCore patch FAILED to apply: ${PATCH_NAME}\n"
+                "Target tree: ${TARGET_DIR}\n"
+                "Error:\n${PATCH_ERR}\n"
+                "Upstream likely changed — rebase the patch:\n"
+                "  cd ${TARGET_DIR}\n"
+                "  git diff -- <file>   # inspect current upstream\n"
+                "  # Regenerate: git diff -- <file> > ${PATCH_FILE}\n"
+            )
+        endif()
+        # Apply the patch
+        execute_process(
+            COMMAND git apply "${PATCH_FILE}"
+            WORKING_DIRECTORY "${TARGET_DIR}"
+            RESULT_VARIABLE APPLY_RESULT
+            ERROR_VARIABLE APPLY_ERR
+        )
+        if(NOT APPLY_RESULT EQUAL 0)
+            message(FATAL_ERROR "git apply failed unexpectedly: ${PATCH_NAME}\n${APPLY_ERR}")
+        endif()
+        message(STATUS "  [${LABEL}] Applied: ${PATCH_NAME}")
+    endforeach()
+endfunction()
+
+# Resolve target directories (before find_package(Zephyr) sets ZEPHYR_BASE)
+get_filename_component(ZEPHYR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../zephyr ABSOLUTE)
+get_filename_component(MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../modules ABSOLUTE)
+
+# Apply unified diff patches to Zephyr tree
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr)
     message(STATUS "Applying ZephCore patches to Zephyr...")
-    file(GLOB_RECURSE ZEPHCORE_PATCH_FILES
-         RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr
-         ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr/*)
-    foreach(REL_PATH ${ZEPHCORE_PATCH_FILES})
-        set(SRC_FILE ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr/${REL_PATH})
-        # ZEPHYR_BASE is set by find_package(Zephyr), but we're before that.
-        # Use the parent directory structure: zephcore/../zephyr
-        get_filename_component(ZEPHYR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../zephyr ABSOLUTE)
+    zephcore_apply_patches(
+        "${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr"
+        "${ZEPHYR_DIR}"
+        "zephyr"
+    )
+endif()
+
+# Copy new files (no upstream equivalent) to Zephyr tree
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new)
+    file(GLOB_RECURSE ZEPHCORE_NEW_FILES
+         RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new
+         ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new/*)
+    foreach(REL_PATH ${ZEPHCORE_NEW_FILES})
+        set(SRC_FILE ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new/${REL_PATH})
         set(DST_FILE ${ZEPHYR_DIR}/${REL_PATH})
-        message(STATUS "  Patching: ${REL_PATH}")
         configure_file(${SRC_FILE} ${DST_FILE} COPYONLY)
+        message(STATUS "  [zephyr-new] ${REL_PATH}")
     endforeach()
 endif()
 
-# Patch modules (loramac-node, etc.) - same mechanism, different target dir
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/modules)
-    message(STATUS "Applying ZephCore patches to modules...")
-    file(GLOB_RECURSE ZEPHCORE_MODULE_PATCH_FILES
-         RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/patches/modules
-         ${CMAKE_CURRENT_SOURCE_DIR}/patches/modules/*)
-    foreach(REL_PATH ${ZEPHCORE_MODULE_PATCH_FILES})
-        set(SRC_FILE ${CMAKE_CURRENT_SOURCE_DIR}/patches/modules/${REL_PATH})
-        get_filename_component(MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../modules ABSOLUTE)
-        set(DST_FILE ${MODULES_DIR}/${REL_PATH})
-        message(STATUS "  Patching: ${REL_PATH}")
-        configure_file(${SRC_FILE} ${DST_FILE} COPYONLY)
-    endforeach()
+# Apply unified diff patches to loramac-node module
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/loramac-node)
+    message(STATUS "Applying ZephCore patches to loramac-node...")
+    zephcore_apply_patches(
+        "${CMAKE_CURRENT_SOURCE_DIR}/patches/loramac-node"
+        "${MODULES_DIR}/lib/loramac-node"
+        "loramac-node"
+    )
+endif()
+
+# Apply unified diff patches to espressif module
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/espressif)
+    message(STATUS "Applying ZephCore patches to espressif...")
+    zephcore_apply_patches(
+        "${CMAKE_CURRENT_SOURCE_DIR}/patches/espressif"
+        "${MODULES_DIR}/hal/espressif"
+        "espressif"
+    )
 endif()
 
 # Add custom boards directory (for Wio Tracker L1, etc.)

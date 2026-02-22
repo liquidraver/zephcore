@@ -1,0 +1,17 @@
+diff --git a/drivers/lora/loramac-node/sx126x_standalone.c b/drivers/lora/loramac-node/sx126x_standalone.c
+index c9b16965bc7..3a2ff8b20c9 100644
+--- a/drivers/lora/loramac-node/sx126x_standalone.c
++++ b/drivers/lora/loramac-node/sx126x_standalone.c
+@@ -40,8 +40,11 @@ uint32_t sx126x_get_dio1_pin_state(struct sx126x_data *dev_data)
+ 
+ void sx126x_dio1_irq_enable(struct sx126x_data *dev_data)
+ {
+-	gpio_pin_interrupt_configure_dt(&sx126x_gpio_dio1,
++	int ret = gpio_pin_interrupt_configure_dt(&sx126x_gpio_dio1,
+ 				     GPIO_INT_EDGE_TO_ACTIVE);
++	if (ret != 0) {
++		LOG_ERR("DIO1 irq enable FAILED: %d", ret);
++	}
+ }
+ 
+ void sx126x_dio1_irq_disable(struct sx126x_data *dev_data)

@@ -1,0 +1,13 @@
+diff --git a/scripts/west_commands/blobs.py b/scripts/west_commands/blobs.py
+index 14f0412cda5..615ba602a6b 100644
+--- a/scripts/west_commands/blobs.py
++++ b/scripts/west_commands/blobs.py
+@@ -288,7 +288,7 @@ class Blobs(WestCommand):
+                 continue
+             self.inf(f"Fetching blob {blob['module']}: {blob['abspath']}")
+ 
+-            if blob['click-through'] and not args.auto_accept:
++            if blob.get('click-through') and not args.auto_accept:
+                 while True:
+                     user_input = input(
+                         "For this blob, need to read and accept "
