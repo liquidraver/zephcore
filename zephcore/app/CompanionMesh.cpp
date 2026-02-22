@@ -1836,7 +1836,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			uint8_t rsp[81];
 			rsp[0] = PACKET_DEVICE_INFO;
 			rsp[1] = 9;  // FIRMWARE_VER_CODE - v9 = client_repeat support
-			rsp[2] = MAX_CONTACTS / 2;
+			rsp[2] = (MAX_CONTACTS / 2 > 255) ? 255 : (MAX_CONTACTS / 2);  // protocol byte, app multiplies by 2
 			rsp[3] = MAX_GROUP_CHANNELS;
 			put_le32(&rsp[4], prefs.ble_pin ? prefs.ble_pin : 123456);  // BLE PIN
 			memcpy(&rsp[8], fw_build, 12);
