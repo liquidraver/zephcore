@@ -7,10 +7,13 @@
 #include <mesh/Packet.h>
 #include <string.h>
 
+#include <zephyr/logging/log.h>
+LOG_MODULE_REGISTER(zephcore_pktpool, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
+
 namespace mesh {
 
-#define POOL_SIZE 16
-#define QUEUE_SIZE 16
+#define POOL_SIZE 32
+#define QUEUE_SIZE 32
 
 struct PacketQueue {
 	Packet *_table[QUEUE_SIZE];
@@ -74,6 +77,21 @@ struct PacketQueue {
 		return true;
 	}
 
+	/* Find index of the entry with the highest priority number (least
+	 * important).  Returns -1 when the queue is empty. */
+	int findLowestPriority() const {
+		if (_num == 0) return -1;
+		uint8_t worst = 0;
+		int idx = 0;
+		for (int j = 0; j < _num; j++) {
+			if (_pri_table[j] >= worst) {
+				worst = _pri_table[j];
+				idx = j;
+			}
+		}
+		return idx;
+	}
+
 	int count() const { return _num; }
 	Packet *itemAt(int i) const { return (i < _num) ? _table[i] : nullptr; }
 };
@@ -105,7 +123,22 @@ void StaticPoolPacketManager::free(Packet *packet)
 
 void StaticPoolPacketManager::queueOutbound(Packet *packet, uint8_t priority, uint32_t scheduled_for)
 {
-	if (!_send_queue.add(packet, priority, scheduled_for)) {
+	if (_send_queue.add(packet, priority, scheduled_for)) return;
+
+	/* Queue full — evict the least-important entry to make room.
+	 * Only evict if the new packet is higher priority (lower number). */
+	int worst = _send_queue.findLowestPriority();
+	if (worst >= 0 && _send_queue._pri_table[worst] > priority) {
+		uint8_t evicted_pri = _send_queue._pri_table[worst];
+		Packet *evicted = _send_queue.removeByIdx(worst);
+		LOG_WRN("queueOutbound: FULL — evicted type=%d pri=%d for type=%d pri=%d",
+			evicted->getPayloadType(), evicted_pri,
+			packet->getPayloadType(), priority);
+		free(evicted);
+		_send_queue.add(packet, priority, scheduled_for);
+	} else {
+		LOG_WRN("queueOutbound: FULL (%d entries) — dropping type=%d pri=%d",
+			_send_queue.count(), packet->getPayloadType(), priority);
 		free(packet);
 	}
 }
@@ -138,6 +171,8 @@ Packet *StaticPoolPacketManager::removeOutboundByIdx(int i)
 void StaticPoolPacketManager::queueInbound(Packet *packet, uint32_t scheduled_for)
 {
 	if (!_rx_queue.add(packet, 0, scheduled_for)) {
+		LOG_WRN("queueInbound: FULL (%d entries) — dropping type=%d",
+			_rx_queue.count(), packet->getPayloadType());
 		free(packet);
 	}
 }

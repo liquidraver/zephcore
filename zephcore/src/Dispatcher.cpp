@@ -295,11 +295,15 @@ void Dispatcher::checkSend()
 	int count = _mgr->getOutboundCount(now);
 	if (count == 0) return;
 
-	if (!millisHasNowPassed(next_tx_time)) {
-		LOG_DBG("checkSend: waiting for tx_time (count=%d)", count);
-		return;
-	}
 	if (_radio->isReceiving()) {
+		/* Channel busy — enforce retry timer so we don't hammer the check */
+		if (!millisHasNowPassed(next_tx_time)) {
+			if (_tx_queued_cb) {
+				uint32_t remaining = next_tx_time - now;
+				_tx_queued_cb(remaining + 1, _tx_queued_user_data);
+			}
+			return;
+		}
 		if (cad_busy_start == 0) {
 			cad_busy_start = now;
 			LOG_INF("checkSend: channel busy, starting wait");
@@ -308,7 +312,11 @@ void Dispatcher::checkSend()
 			_err_flags |= ERR_EVENT_CAD_TIMEOUT;
 			LOG_WRN("checkSend: CAD timeout exceeded");
 		} else {
-			next_tx_time = futureMillis((int)getCADFailRetryDelay());
+			uint32_t retry = getCADFailRetryDelay();
+			next_tx_time = futureMillis((int)retry);
+			if (_tx_queued_cb) {
+				_tx_queued_cb(retry + 1, _tx_queued_user_data);
+			}
 			return;
 		}
 	}
@@ -323,6 +331,9 @@ void Dispatcher::checkSend()
 				outbound->getPayloadType());
 			_mgr->queueOutbound(outbound, 0, futureMillis(5000));
 			outbound = nullptr;
+			if (_tx_queued_cb) {
+				_tx_queued_cb(5000, _tx_queued_user_data);
+			}
 			return;
 		}
 		LOG_INF("checkSend: got outbound type=%d payload_len=%d", outbound->getPayloadType(), outbound->payload_len);
@@ -370,19 +381,27 @@ void Dispatcher::checkSend()
 			 * isReceiving() and actual TX start (serialisation +
 			 * logging can take 1-5 ms). */
 			if (_radio->isReceiving()) {
-				LOG_INF("checkSend: channel busy at TX commit, re-queuing");
-				_mgr->queueOutbound(outbound, 0, futureMillis((int)getCADFailRetryDelay()));
+				uint32_t retry = getCADFailRetryDelay();
+				LOG_INF("checkSend: channel busy at TX commit, re-queuing delay=%u", retry);
+				_mgr->queueOutbound(outbound, 0, futureMillis((int)retry));
 				outbound = nullptr;
+				if (_tx_queued_cb) {
+					_tx_queued_cb(retry, _tx_queued_user_data);
+				}
 				return;
 			}
 
 			LOG_INF("checkSend: calling startSendRaw len=%d", len);
 			bool success = _radio->startSendRaw(raw, len);
 			if (!success) {
-				LOG_ERR("checkSend: startSendRaw failed!");
+				uint32_t retry = getCADFailRetryDelay();
+				LOG_ERR("checkSend: startSendRaw failed! re-queuing delay=%u", retry);
 				logTxFail(outbound, outbound->getRawLength());
-				releasePacket(outbound);
+				_mgr->queueOutbound(outbound, 0, futureMillis((int)retry));
 				outbound = nullptr;
+				if (_tx_queued_cb) {
+					_tx_queued_cb(retry, _tx_queued_user_data);
+				}
 			} else {
 				LOG_INF("checkSend: TX started, max_airtime=%u", max_airtime);
 				outbound_expiry = futureMillis((int)max_airtime);
