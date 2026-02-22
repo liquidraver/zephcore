@@ -115,10 +115,10 @@ void CommonCLI::loadPrefs(const char* path) {
     _prefs->bw = constrain(_prefs->bw, 7.8f, 500.0f);
     _prefs->sf = constrain(_prefs->sf, (uint8_t)5, (uint8_t)12);
     _prefs->cr = constrain(_prefs->cr, (uint8_t)5, (uint8_t)8);
-    _prefs->tx_power_dbm = constrain(_prefs->tx_power_dbm, (uint8_t)1, (uint8_t)30);
+    _prefs->tx_power_dbm = constrain(_prefs->tx_power_dbm, (int8_t)-9, (int8_t)30);
 #ifdef CONFIG_ZEPHCORE_MAX_TX_POWER_DBM
     if (_prefs->tx_power_dbm > CONFIG_ZEPHCORE_MAX_TX_POWER_DBM) {
-        _prefs->tx_power_dbm = (uint8_t)CONFIG_ZEPHCORE_MAX_TX_POWER_DBM;
+        _prefs->tx_power_dbm = (int8_t)CONFIG_ZEPHCORE_MAX_TX_POWER_DBM;
     }
 #endif
     _prefs->multi_acks = constrain(_prefs->multi_acks, (uint8_t)0, (uint8_t)1);
@@ -404,7 +404,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             }
             *reply = 0;
         } else if (memcmp(config, "tx", 2) == 0 && (config[2] == 0 || config[2] == ' ')) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->tx_power_dbm);
+            snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->tx_power_dbm);
         } else if (memcmp(config, "freq", 4) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %.3f", (double)_prefs->freq);
         } else if (memcmp(config, "public.key", 10) == 0) {
@@ -412,6 +412,13 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             mesh::Utils::toHex(&reply[2], _callbacks->getSelfId().pub_key, PUB_KEY_SIZE);
         } else if (memcmp(config, "role", 4) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %s", _callbacks->getRole());
+        } else if (memcmp(config, "bootloader.ver", 14) == 0) {
+            char ver[32];
+            if (_board->getBootloaderVersion(ver, sizeof(ver))) {
+                snprintf(reply, CLI_REPLY_SIZE, "> %s", ver);
+            } else {
+                strcpy(reply, "> unknown");
+            }
         } else if (memcmp(config, "adc.multiplier", 14) == 0) {
             float adc_mult = _board->getAdcMultiplier();
             if (adc_mult == 0.0f) {
@@ -581,10 +588,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 val = CONFIG_ZEPHCORE_MAX_TX_POWER_DBM;
             }
 #endif
-            _prefs->tx_power_dbm = (uint8_t)val;
+            _prefs->tx_power_dbm = (int8_t)val;
             savePrefs();
             _callbacks->setTxPower(_prefs->tx_power_dbm);
-            snprintf(reply, CLI_REPLY_SIZE, "OK - tx power=%u dBm", (uint32_t)_prefs->tx_power_dbm);
+            snprintf(reply, CLI_REPLY_SIZE, "OK - tx power=%d dBm", (int)_prefs->tx_power_dbm);
         } else if (sender_timestamp == 0 && memcmp(config, "freq ", 5) == 0) {
             _prefs->freq = atof(&config[5]);
             savePrefs();

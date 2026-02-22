@@ -1095,10 +1095,16 @@ void CompanionMesh::onRawDataRecv(mesh::Packet *packet)
 	sendPush(buf[0], &buf[1], i - 1);
 }
 
-/* Dispatcher tuning - uses prefs for configurable behavior */
+/* Dispatcher tuning - hard-coded for companion repeat mode (matches Arduino) */
+uint32_t CompanionMesh::getRetransmitDelay(const mesh::Packet *packet)
+{
+	uint32_t t = (_radio->getEstAirtimeFor(packet->path_len + packet->payload_len + 2) * 0.5f);
+	return getRNG()->nextInt(0, 5 * t + 1);
+}
+
 uint32_t CompanionMesh::getDirectRetransmitDelay(const mesh::Packet *packet)
 {
-	uint32_t t = (_radio->getEstAirtimeFor(packet->path_len + packet->payload_len + 2) * 0.3f);
+	uint32_t t = (_radio->getEstAirtimeFor(packet->path_len + packet->payload_len + 2) * 0.2f);
 	return getRNG()->nextInt(0, 5 * t + 1);
 }
 
@@ -1752,7 +1758,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		if (len >= 2) {
 			int8_t power = (int8_t)data[1];
 			if (power >= -9 && power <= MAX_LORA_TX_POWER) {
-				prefs.tx_power_dbm = (uint8_t)power;
+				prefs.tx_power_dbm = power;
 				_store->savePrefs(prefs);
 				if (_radio_reconfig_cb) _radio_reconfig_cb();
 				sendPacketOk();

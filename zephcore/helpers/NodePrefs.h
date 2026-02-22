@@ -30,7 +30,7 @@ struct NodePrefs {
 	double node_lat, node_lon;
 	char password[16];
 	float freq;
-	uint8_t tx_power_dbm;
+	int8_t tx_power_dbm;
 	uint8_t disable_fwd;            // repeater: disable forwarding
 	uint8_t advert_interval;        // minutes / 2
 	uint8_t flood_advert_interval;  // hours

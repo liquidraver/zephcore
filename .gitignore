@@ -79,5 +79,8 @@ core
 meshcore/src/eraser_main.cpp
 zephcore/AUDIT_FINDINGS.md
 
+# Upstream tracking (local only)
+UPSTREAM_TRACKER.md
+
 # Side projects (not part of main firmware)
 /doom/

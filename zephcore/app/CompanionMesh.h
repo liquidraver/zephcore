@@ -214,6 +214,7 @@ protected:
 	void sendFloodScoped(const mesh::GroupChannel &channel, mesh::Packet *pkt, uint32_t delay_millis = 0) override;
 
 	/* Dispatcher tuning (uses prefs) */
+	uint32_t getRetransmitDelay(const mesh::Packet *packet) override;
 	uint32_t getDirectRetransmitDelay(const mesh::Packet *packet) override;
 	uint8_t getDutyCyclePercent() const override;
 	uint8_t getExtraAckTransmitCount() const override;

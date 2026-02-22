@@ -731,6 +731,39 @@ void RepeaterMesh::onControlDataRecv(mesh::Packet* packet) {
                 sendZeroHop(resp, getRetransmitDelay(resp) * 4);
             }
         }
+    } else if (type == CTL_TYPE_NODE_DISCOVER_RESP && packet->payload_len >= 6) {
+        uint8_t node_type = packet->payload[0] & 0x0F;
+        if (node_type != ADV_TYPE_REPEATER) return;
+        if (packet->payload_len < 6 + PUB_KEY_SIZE) return;
+
+        /* Only accept responses matching our pending discover tag */
+        if (pending_discover_tag == 0 || millisHasNowPassed(pending_discover_until)) {
+            pending_discover_tag = 0;
+            return;
+        }
+        uint32_t tag;
+        memcpy(&tag, &packet->payload[2], 4);
+        if (tag != pending_discover_tag) return;
+
+        mesh::Identity id(&packet->payload[6]);
+        if (id.matches(self_id)) return;
+        putNeighbour(id, getRTCClock()->getCurrentTime(), packet->getSNR());
+    }
+}
+
+void RepeaterMesh::sendNodeDiscoverReq() {
+    uint8_t data[10];
+    data[0] = CTL_TYPE_NODE_DISCOVER_REQ;  // prefix_only=0
+    data[1] = (1 << ADV_TYPE_REPEATER);
+    getRNG()->random(&data[2], 4);  // tag
+    memcpy(&pending_discover_tag, &data[2], 4);
+    pending_discover_until = futureMillis(30000);
+    uint32_t since = 0;
+    memcpy(&data[6], &since, 4);
+
+    auto pkt = createControlData(data, sizeof(data));
+    if (pkt) {
+        sendZeroHop(pkt);
     }
 }
 
@@ -752,6 +785,8 @@ RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Mil
     _logging = false;
     region_load_active = false;
     recv_pkt_region = nullptr;
+    pending_discover_tag = 0;
+    pending_discover_until = 0;
 
 #if MAX_NEIGHBOURS > 0
     for (int i = 0; i < MAX_NEIGHBOURS; i++) {
@@ -850,7 +885,7 @@ void RepeaterMesh::dumpLogFile() {
     LOG_INF("Log dump not implemented");
 }
 
-void RepeaterMesh::setTxPower(uint8_t power_dbm) {
+void RepeaterMesh::setTxPower(int8_t power_dbm) {
     radio_set_tx_power(power_dbm);
 }
 
@@ -1121,6 +1156,15 @@ void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char*
             }
         } else {
             strcpy(reply, "Err - ??");
+        }
+    } else if (memcmp(command, "discover.neighbors", 18) == 0) {
+        const char* sub = command + 18;
+        while (*sub == ' ') sub++;
+        if (*sub != 0) {
+            strcpy(reply, "Err - discover.neighbors has no options");
+        } else {
+            sendNodeDiscoverReq();
+            strcpy(reply, "OK - Discover sent");
         }
     } else {
         _cli.handleCommand(sender_timestamp, command, reply);

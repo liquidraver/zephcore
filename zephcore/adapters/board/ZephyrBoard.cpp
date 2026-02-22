@@ -175,6 +175,35 @@ bool ZephyrBoard::startOTAUpdate(const char *id, char reply[])
 #endif
 }
 
+bool ZephyrBoard::getBootloaderVersion(char *out, size_t max_len)
+{
+#if defined(CONFIG_SOC_SERIES_NRF52X) || defined(CONFIG_SOC_SERIES_NRF52)
+	/* Scan flash for UF2 bootloader version string.
+	 * info.txt lives somewhere in the 0xFB000-0xFE000 range depending
+	 * on SoftDevice version and bootloader build. */
+	static const char MARKER[] = "UF2 Bootloader ";
+	const uint8_t *flash = (const uint8_t *)0x000FB000;
+
+	for (uint32_t i = 0; i < 0x3000 - (sizeof(MARKER) - 1); i++) {
+		if (memcmp(&flash[i], MARKER, sizeof(MARKER) - 1) == 0) {
+			const char *ver = (const char *)&flash[i + sizeof(MARKER) - 1];
+			size_t len = 0;
+			while (len < max_len - 1 && ver[len] != '\0' &&
+			       ver[len] != ' ' && ver[len] != '\n' && ver[len] != '\r') {
+				out[len] = ver[len];
+				len++;
+			}
+			out[len] = '\0';
+			return len > 0;
+		}
+	}
+#else
+	(void)out;
+	(void)max_len;
+#endif
+	return false;
+}
+
 void ZephyrBoard::clearBootloaderMagic()
 {
 #ifdef NRF52_GPREGRET

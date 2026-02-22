@@ -16,6 +16,7 @@ public:
 	const char *getManufacturerName() const override;
 	void reboot() override;
 	void rebootToBootloader();        /* Reboot into UF2 mass storage bootloader */
+	bool getBootloaderVersion(char *version, size_t max_len) override;
 	bool startOTAUpdate(const char *id, char reply[]) override;  /* Reboot into BLE OTA DFU */
 	void clearBootloaderMagic();      /* Clear stale GPREGRET values at startup */
 	uint8_t getStartupReason() const override;

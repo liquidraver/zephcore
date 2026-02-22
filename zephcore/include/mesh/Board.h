@@ -6,6 +6,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 #include <math.h>
 
 namespace mesh {
@@ -28,6 +29,7 @@ public:
 	virtual uint32_t getGpio() { return 0; }
 	virtual void setGpio(uint32_t values) { (void)values; }
 	virtual uint8_t getStartupReason() const = 0;
+	virtual bool getBootloaderVersion(char *version, size_t max_len) { (void)version; (void)max_len; return false; }
 	virtual bool startOTAUpdate(const char *id, char reply[]) { (void)id; (void)reply; return false; }
 
 	virtual bool isExternalPowered() { return false; }

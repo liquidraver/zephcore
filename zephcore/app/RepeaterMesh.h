@@ -25,7 +25,7 @@
 #include "RepeaterDataStore.h"
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.12.0-zephyr"
+  #define FIRMWARE_VERSION   "v1.13.0-zephyr"
 #endif
 
 #ifndef FIRMWARE_BUILD_DATE
@@ -92,6 +92,8 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
     RegionEntry* load_stack[8];
     RegionEntry* recv_pkt_region;
     RateLimiter discover_limiter, anon_limiter;
+    uint32_t pending_discover_tag;
+    unsigned long pending_discover_until;
     bool region_load_active;
     unsigned long dirty_contacts_expiry;
 #if MAX_NEIGHBOURS > 0
@@ -105,6 +107,7 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
     int matching_peer_indexes[MAX_CLIENTS];
 
     void putNeighbour(const mesh::Identity& id, uint32_t timestamp, float snr);
+    void sendNodeDiscoverReq();
     uint8_t handleLoginReq(const mesh::Identity& sender, const uint8_t* secret, uint32_t sender_timestamp, const uint8_t* data, bool is_flood);
     uint8_t handleAnonRegionsReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data);
     uint8_t handleAnonOwnerReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data);
@@ -171,7 +174,7 @@ public:
     void setLoggingOn(bool enable) override { _logging = enable; }
     void eraseLogFile() override;
     void dumpLogFile() override;
-    void setTxPower(uint8_t power_dbm) override;
+    void setTxPower(int8_t power_dbm) override;
     void formatNeighborsReply(char* reply) override;
     void removeNeighbor(const uint8_t* pubkey, int key_len) override;
     void formatStatsReply(char* reply) override;

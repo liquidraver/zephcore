@@ -65,12 +65,13 @@ struct PacketQueue {
 		return item;
 	}
 
-	void add(Packet *packet, uint8_t priority, uint32_t scheduled_for) {
-		if (_num >= QUEUE_SIZE) return;
+	bool add(Packet *packet, uint8_t priority, uint32_t scheduled_for) {
+		if (_num >= QUEUE_SIZE) return false;
 		_table[_num] = packet;
 		_pri_table[_num] = priority;
 		_schedule_table[_num] = scheduled_for;
 		_num++;
+		return true;
 	}
 
 	int count() const { return _num; }
@@ -104,7 +105,9 @@ void StaticPoolPacketManager::free(Packet *packet)
 
 void StaticPoolPacketManager::queueOutbound(Packet *packet, uint8_t priority, uint32_t scheduled_for)
 {
-	_send_queue.add(packet, priority, scheduled_for);
+	if (!_send_queue.add(packet, priority, scheduled_for)) {
+		free(packet);
+	}
 }
 
 Packet *StaticPoolPacketManager::getNextOutbound(uint32_t now)
@@ -134,7 +137,9 @@ Packet *StaticPoolPacketManager::removeOutboundByIdx(int i)
 
 void StaticPoolPacketManager::queueInbound(Packet *packet, uint32_t scheduled_for)
 {
-	_rx_queue.add(packet, 0, scheduled_for);
+	if (!_rx_queue.add(packet, 0, scheduled_for)) {
+		free(packet);
+	}
 }
 
 Packet *StaticPoolPacketManager::getNextInbound(uint32_t now)
