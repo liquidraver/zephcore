@@ -152,11 +152,22 @@ void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
 
 	LOG_DBG("RX callback: size=%u rssi=%d snr=%d", size, rssi, snr);
 
-	/* Ring buffer write */
+	/* Ring buffer write — SPSC: only ISR writes _rx_head, only main
+	 * thread writes _rx_tail.  On overflow, drop the NEW packet to
+	 * preserve this invariant (ISR must never touch _rx_tail). */
 	uint8_t next_head = (self->_rx_head + 1) % RX_RING_SIZE;
 	if (next_head == self->_rx_tail) {
-		LOG_WRN("RX ring full, dropping oldest packet");
-		self->_rx_tail = (self->_rx_tail + 1) % RX_RING_SIZE;
+		LOG_WRN("RX ring full, dropping new packet");
+		self->_packets_recv_errors++;
+		/* Still restore duty cycle and notify — main loop should
+		 * drain faster next time. */
+		if (self->_rx_duty_cycle_enabled) {
+			self->hwSetRxDutyCycle(true);
+		}
+		if (self->_rx_cb) {
+			self->_rx_cb(self->_rx_cb_user_data);
+		}
+		return;
 	}
 
 	RxPacket *pkt = &self->_rx_ring[self->_rx_head];

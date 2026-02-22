@@ -152,74 +152,78 @@ void Dispatcher::loop()
 
 void Dispatcher::checkRecv()
 {
-	Packet *pkt = nullptr;
-	float score = 0.0f;
-	uint32_t air_time = 0;
-
-	{
+	/* Drain ALL queued LoRa packets per wake.
+	 * k_event is a bitfield (not a counter), so multiple ISR arrivals
+	 * may only produce one wake.  We must empty the ring each time. */
+	for (;;) {
 		uint8_t raw[MAX_TRANS_UNIT + 1];
 		int len = _radio->recvRaw(raw, MAX_TRANS_UNIT);
-		if (len > 0) {
-			LOG_INF("checkRecv: got raw packet len=%d", len);
-			logRxRaw(_radio->getLastSNR(), _radio->getLastRSSI(), raw, len);
-			pkt = _mgr->allocNew();
-			if (pkt == nullptr) {
-				LOG_WRN("checkRecv: packet alloc failed");
-				return;
-			}
-			LOG_INF("checkRecv: parsing packet");
-			int i = 0;
-			pkt->header = raw[i++];
-			if (pkt->hasTransportCodes()) {
-				memcpy(&pkt->transport_codes[0], &raw[i], 2); i += 2;
-				memcpy(&pkt->transport_codes[1], &raw[i], 2); i += 2;
-			} else {
-				pkt->transport_codes[0] = pkt->transport_codes[1] = 0;
-			}
-			pkt->path_len = raw[i++];
+		if (len <= 0) {
+			break;  /* ring empty — done */
+		}
 
-			if (pkt->path_len > MAX_PATH_SIZE || i + pkt->path_len > len) {
-				LOG_WRN("checkRecv: bad path_len=%d", pkt->path_len);
-				_mgr->free(pkt);
-				pkt = nullptr;
-			} else {
-				memcpy(pkt->path, &raw[i], pkt->path_len);
-				i += pkt->path_len;
-				pkt->payload_len = len - i;
-				if (pkt->payload_len > (int)sizeof(pkt->payload)) {
-					LOG_WRN("checkRecv: payload too large %d", pkt->payload_len);
-					_mgr->free(pkt);
-					pkt = nullptr;
-				} else {
-					memcpy(pkt->payload, &raw[i], pkt->payload_len);
-					pkt->_snr = (int8_t)(_radio->getLastSNR() * 4.0f);
-					score = _radio->packetScore(_radio->getLastSNR(), len);
-					air_time = _radio->getEstAirtimeFor(len);
-					rx_air_time += air_time;
-					LOG_INF("checkRecv: header=0x%02x type=%d route=%s path_len=%d payload_len=%d",
-						pkt->header, pkt->getPayloadType(),
-						pkt->isRouteDirect() ? "direct" : "flood",
-						pkt->path_len, pkt->payload_len);
-					/* Log path hashes to identify forwarding nodes */
-					if (pkt->path_len > 0) {
-						LOG_INF("checkRecv: path[0]=0x%02x%s%s",
-							pkt->path[0],
-							pkt->path_len > 1 ? " path[1]=0x" : "",
-							pkt->path_len > 1 ? "" : "");
-						if (pkt->path_len > 1) {
-							LOG_INF("  path bytes: %02x %02x %02x %02x",
-								pkt->path[0],
-								pkt->path_len > 1 ? pkt->path[1] : 0,
-								pkt->path_len > 2 ? pkt->path[2] : 0,
-								pkt->path_len > 3 ? pkt->path[3] : 0);
-						}
-					}
-				}
+		LOG_INF("checkRecv: got raw packet len=%d", len);
+		logRxRaw(_radio->getLastSNR(), _radio->getLastRSSI(), raw, len);
+
+		Packet *pkt = _mgr->allocNew();
+		if (pkt == nullptr) {
+			LOG_WRN("checkRecv: packet alloc failed");
+			break;
+		}
+
+		float score = 0.0f;
+		uint32_t air_time = 0;
+
+		LOG_INF("checkRecv: parsing packet");
+		int i = 0;
+		pkt->header = raw[i++];
+		if (pkt->hasTransportCodes()) {
+			memcpy(&pkt->transport_codes[0], &raw[i], 2); i += 2;
+			memcpy(&pkt->transport_codes[1], &raw[i], 2); i += 2;
+		} else {
+			pkt->transport_codes[0] = pkt->transport_codes[1] = 0;
+		}
+		pkt->path_len = raw[i++];
+
+		if (pkt->path_len > MAX_PATH_SIZE || i + pkt->path_len > len) {
+			LOG_WRN("checkRecv: bad path_len=%d", pkt->path_len);
+			_mgr->free(pkt);
+			continue;
+		}
+
+		memcpy(pkt->path, &raw[i], pkt->path_len);
+		i += pkt->path_len;
+		pkt->payload_len = len - i;
+		if (pkt->payload_len > (int)sizeof(pkt->payload)) {
+			LOG_WRN("checkRecv: payload too large %d", pkt->payload_len);
+			_mgr->free(pkt);
+			continue;
+		}
+
+		memcpy(pkt->payload, &raw[i], pkt->payload_len);
+		pkt->_snr = (int8_t)(_radio->getLastSNR() * 4.0f);
+		score = _radio->packetScore(_radio->getLastSNR(), len);
+		air_time = _radio->getEstAirtimeFor(len);
+		rx_air_time += air_time;
+		LOG_INF("checkRecv: header=0x%02x type=%d route=%s path_len=%d payload_len=%d",
+			pkt->header, pkt->getPayloadType(),
+			pkt->isRouteDirect() ? "direct" : "flood",
+			pkt->path_len, pkt->payload_len);
+		/* Log path hashes to identify forwarding nodes */
+		if (pkt->path_len > 0) {
+			LOG_INF("checkRecv: path[0]=0x%02x%s%s",
+				pkt->path[0],
+				pkt->path_len > 1 ? " path[1]=0x" : "",
+				pkt->path_len > 1 ? "" : "");
+			if (pkt->path_len > 1) {
+				LOG_INF("  path bytes: %02x %02x %02x %02x",
+					pkt->path[0],
+					pkt->path_len > 1 ? pkt->path[1] : 0,
+					pkt->path_len > 2 ? pkt->path[2] : 0,
+					pkt->path_len > 3 ? pkt->path[3] : 0);
 			}
 		}
-	}
 
-	if (pkt) {
 #if IS_ENABLED(CONFIG_ZEPHCORE_PACKET_LOGGING)
 		/* Arduino-compatible packet logging - use printk to bypass log level filtering */
 		{

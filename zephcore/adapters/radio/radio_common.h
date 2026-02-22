@@ -16,8 +16,12 @@
 #define NOISE_FLOOR_SAMPLING_THRESHOLD   14  /* only sample if rssi < floor + threshold */
 #define DEFAULT_NOISE_FLOOR              0   /* first calibration accepts all samples */
 
-/* --- RX ring buffer --- */
-#define RX_RING_SIZE 4
+/* --- RX ring buffer ---
+ * Sized to be effectively drop-proof: even at the fastest LoRa settings
+ * (SF7/BW500, ~5ms per packet), 32 slots buffer 160ms+ of back-to-back
+ * arrivals.  The main loop drain takes microseconds per packet, so
+ * overflow should never occur in practice.  Cost: 32 × 260 = ~8.3 KB. */
+#define RX_RING_SIZE 32
 
 /* --- TX wait thread --- */
 #define TX_WAIT_THREAD_STACK_SIZE 1024
