@@ -65,6 +65,10 @@ public:
 	virtual Packet *getNextInbound(uint32_t now) = 0;
 };
 
+/* Callback fired when a packet is queued for transmission with a delay.
+ * Allows the event loop to schedule a precise wake at delay expiry. */
+typedef void (*tx_queued_callback_t)(uint32_t delay_ms, void *user_data);
+
 typedef uint32_t DispatcherAction;
 
 #define ACTION_RELEASE           (0)
@@ -87,6 +91,8 @@ class Dispatcher {
 	bool prev_isrecv_mode;
 	uint32_t n_sent_flood, n_sent_direct;
 	uint32_t n_recv_flood, n_recv_direct;
+	tx_queued_callback_t _tx_queued_cb;
+	void *_tx_queued_user_data;
 
 	void processRecvPacket(Packet *pkt);
 
@@ -129,6 +135,10 @@ public:
 		n_sent_flood = n_sent_direct = 0;
 		n_recv_flood = n_recv_direct = 0;
 		_err_flags = 0;
+	}
+	void setTxQueuedCallback(tx_queued_callback_t cb, void *user_data) {
+		_tx_queued_cb = cb;
+		_tx_queued_user_data = user_data;
 	}
 	bool millisHasNowPassed(uint32_t timestamp) const;
 	uint32_t futureMillis(int millis_from_now) const;

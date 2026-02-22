@@ -76,6 +76,35 @@ list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 #   2. Create boards/<board>/board.overlay with hardware definitions
 #   3. Build: west build -b <board> zephcore --pristine
 
+# Under sysbuild, BOARD and EXTRA_CONF_FILE are stored in a cache file that
+# find_package(Zephyr) loads later. We need them NOW for config hierarchy
+# detection. Read them directly from the sysbuild cache file.
+if(NOT BOARD AND DEFINED SYSBUILD_CACHE AND EXISTS "${SYSBUILD_CACHE}")
+    file(STRINGS "${SYSBUILD_CACHE}" _sysbuild_strings ENCODING UTF-8)
+    foreach(_str ${_sysbuild_strings})
+        if(_str MATCHES "^BOARD:STRING=(.+)")
+            set(BOARD "${CMAKE_MATCH_1}")
+        endif()
+        # User-specified EXTRA_CONF_FILE (e.g., repeater.conf) is passed to sysbuild,
+        # not the app. Recover it so our auto-include logic can detect it.
+        if(_str MATCHES "^EXTRA_CONF_FILE:UNINITIALIZED=(.+)")
+            set(_SYSBUILD_USER_CONF "${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+    if(BOARD)
+        message(STATUS "Sysbuild: BOARD=${BOARD}")
+    endif()
+    if(_SYSBUILD_USER_CONF)
+        # Merge user extras into EXTRA_CONF_FILE so downstream checks see them
+        if(EXTRA_CONF_FILE)
+            set(EXTRA_CONF_FILE "${EXTRA_CONF_FILE};${_SYSBUILD_USER_CONF}")
+        else()
+            set(EXTRA_CONF_FILE "${_SYSBUILD_USER_CONF}")
+        endif()
+        message(STATUS "Sysbuild: user EXTRA_CONF_FILE=${_SYSBUILD_USER_CONF}")
+    endif()
+endif()
+
 # Build common config file list based on detected platform
 set(ZEPHCORE_COMMON_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/zephcore_common.conf")
 
@@ -108,8 +137,12 @@ endif()
 # For custom boards (e.g., wio_tracker_l1/nrf52840), BOARD contains the base name
 # For Zephyr boards with qualifiers (e.g., rak4631/nrf52840), BOARD contains base/qualifier
 # We extract just the base board name for folder lookup
-string(REPLACE "/" ";" BOARD_PARTS ${BOARD})
-list(GET BOARD_PARTS 0 BOARD_BASE)  # Get base name without qualifier
+if(BOARD)
+    string(REPLACE "/" ";" BOARD_PARTS "${BOARD}")
+    list(GET BOARD_PARTS 0 BOARD_BASE)
+else()
+    set(BOARD_BASE "")
+endif()
 
 # Search for board.conf in possible locations
 set(ZEPHCORE_BOARD_CONF "")
@@ -142,6 +175,18 @@ if(EXTRA_CONF_FILE MATCHES "prod\\.conf")
 else()
     if(EXISTS ${ZEPHCORE_LOGGING_CONF})
         list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_LOGGING_CONF})
+    endif()
+endif()
+
+# Auto-include WiFi OTA for ESP32 repeater builds.
+# Enables WiFi AP + HTTP server + MCUboot image management.
+# Requires --sysbuild to build MCUboot alongside the app.
+# Non-ESP32 builds and companion builds are unaffected.
+if(ZEPHCORE_PLATFORM_CONF MATCHES "esp32_common" AND EXTRA_CONF_FILE MATCHES "repeater")
+    set(ZEPHCORE_WIFI_OTA_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/wifi_ota.conf")
+    if(EXISTS ${ZEPHCORE_WIFI_OTA_CONF})
+        list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_WIFI_OTA_CONF})
+        message(STATUS "  WiFi OTA: auto-enabled (ESP32 repeater)")
     endif()
 endif()
 
@@ -345,20 +390,42 @@ if(CONFIG_ZEPHCORE_EASTER_EGG_DOOM)
   )
 endif()
 
+# ========== WiFi OTA (ESP32 repeater builds) ==========
+if(CONFIG_ZEPHCORE_WIFI_OTA)
+  message(STATUS "ZephCore WiFi OTA: ENABLED")
+  target_sources(app PRIVATE
+    adapters/ota/wifi_ota.c
+  )
+  target_include_directories(app PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/ota
+  )
+  # Register per-service HTTP resource iterable section (required by Zephyr HTTP server).
+  # Without this, the linker can't find _http_resource_desc_ota_service_list_start/end.
+  zephyr_linker_sources(SECTIONS ${CMAKE_CURRENT_SOURCE_DIR}/adapters/ota/sections-rom.ld)
+endif()
+
 # ========== Post-build: ESP32 flash instructions ==========
 if(ZEPHCORE_PLATFORM_CONF MATCHES "esp32_common")
-  # ESP32 simple boot: zephyr.bin is a self-contained image at 0x0.
-  # It includes embedded bootloader code — no separate bootloader needed.
-  # NVS (0x3B0000) and LittleFS (0x3B2000) are NOT touched by flashing.
-  message(STATUS "")
-  message(STATUS "ESP32 Flash Commands:")
-  message(STATUS "  Normal update (preserves NVS + user data):")
-  message(STATUS "    esptool --port COMx --baud 921600 write_flash 0x0 build_dir/zephyr/zephyr.bin")
-  message(STATUS "  Full flash (after erase_flash):")
-  message(STATUS "    esptool --port COMx --baud 921600 erase_flash")
-  message(STATUS "    esptool --port COMx --baud 921600 write_flash 0x0 build_dir/zephyr/zephyr.bin")
-  message(STATUS "  Or use: west flash --build-dir build_dir")
-  message(STATUS "")
+  if(CONFIG_ZEPHCORE_WIFI_OTA)
+    # MCUboot build (via --sysbuild): merged image or west flash
+    message(STATUS "")
+    message(STATUS "ESP32 Flash Commands (MCUboot + WiFi OTA):")
+    message(STATUS "  Flash all (MCUboot + app):  west flash --build-dir build_dir")
+    message(STATUS "  OTA update binary:          build_dir/zephcore/zephyr/zephyr.signed.bin")
+    message(STATUS "  Full erase first:           esptool --port COMx erase_flash")
+    message(STATUS "")
+  else()
+    # Simple boot: zephyr.bin is a self-contained image at 0x0.
+    message(STATUS "")
+    message(STATUS "ESP32 Flash Commands:")
+    message(STATUS "  Normal update (preserves NVS + user data):")
+    message(STATUS "    esptool --port COMx --baud 921600 write_flash 0x0 build_dir/zephyr/zephyr.bin")
+    message(STATUS "  Full flash (after erase_flash):")
+    message(STATUS "    esptool --port COMx --baud 921600 erase_flash")
+    message(STATUS "    esptool --port COMx --baud 921600 write_flash 0x0 build_dir/zephyr/zephyr.bin")
+    message(STATUS "  Or use: west flash --build-dir build_dir")
+    message(STATUS "")
+  endif()
 endif()
 
 # ========== Post-build: Generate DFU zip for OTA updates (nRF52 only) ==========

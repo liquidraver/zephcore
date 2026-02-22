@@ -5,7 +5,7 @@
  * Pin mapping (from Arduino MeshCore variants/station_g2):
  *   LoRa SPI2:  SCLK=GPIO12, MOSI=GPIO13, MISO=GPIO14, NSS=GPIO11
  *   I2C0:       SDA=GPIO5,   SCL=GPIO6   (SH1106 OLED + sensors)
- *   UART1:      TX=GPIO7,    RX=GPIO15   (GPS)
+ *   UART1:      TX=GPIO15,   RX=GPIO7    (GPS — GPIO7 is GPS TX, GPIO15 is GPS RX)
  *   Console:    USB Serial (native ESP32-S3 USB)
  */
 
@@ -37,14 +37,14 @@
 		};
 	};
 
-	/* UART1 — GPS module */
+	/* UART1 — GPS module (GPIO7 = GPS TX → CPU RX, GPIO15 = GPS RX → CPU TX) */
 	uart1_default: uart1_default {
 		group1 {
-			pinmux = <UART1_TX_GPIO7>;
+			pinmux = <UART1_TX_GPIO15>;
 			output-high;
 		};
 		group2 {
-			pinmux = <UART1_RX_GPIO15>;
+			pinmux = <UART1_RX_GPIO7>;
 			bias-pull-up;
 		};
 	};

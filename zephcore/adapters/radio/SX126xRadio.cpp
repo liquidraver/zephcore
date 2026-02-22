@@ -228,9 +228,9 @@ void SX126xRadio::applyRxDutyCycleIfEnabled()
 
 	uint32_t bw_int = (uint32_t)bw_khz;
 	uint32_t bw_frac = (uint32_t)((bw_khz - bw_int) * 10);
-	LOG_INF("RX duty cycle: SF%d BW%u.%u sym=%uus preamble=%ums",
+	LOG_DBG("RX duty cycle: SF%d BW%u.%u sym=%uus preamble=%ums",
 		sf, bw_int, bw_frac, symbol_us, preamble_ms);
-	LOG_INF("  -> rx=%ums sleep=%ums period=%ums (minSym=%d sleepSym=%d)",
+	LOG_DBG("  -> rx=%ums sleep=%ums period=%ums (minSym=%d sleepSym=%d)",
 		rx_ms, sleep_ms, total_ms, min_symbols, sleep_symbols);
 }
 

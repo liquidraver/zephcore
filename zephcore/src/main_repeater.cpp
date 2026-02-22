@@ -49,6 +49,10 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 /* Radio + mesh includes (shared header selects LR1110 or SX126x) */
 #include <mesh/RadioIncludes.h>
 
+#if IS_ENABLED(CONFIG_ZEPHCORE_WIFI_OTA)
+#include "wifi_ota.h"
+#endif
+
 /* LED configuration */
 #if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
 #define LED0_NODE DT_ALIAS(led0)
@@ -71,7 +75,9 @@ static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 #define MESH_EVENT_LORA_TX_DONE  BIT(1)  /* LoRa TX complete */
 #define MESH_EVENT_CLI_RX        BIT(2)  /* CLI command received */
 #define MESH_EVENT_HOUSEKEEPING  BIT(3)  /* Periodic housekeeping (noise floor, etc.) */
-#define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_CLI_RX | MESH_EVENT_HOUSEKEEPING)
+#define MESH_EVENT_GPS_ACTION    BIT(4)  /* GPS state change (must run on main thread!) */
+#define MESH_EVENT_TX_DRAIN      BIT(5)  /* Outbound packet delay expired, run checkSend */
+#define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_CLI_RX | MESH_EVENT_HOUSEKEEPING | MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN)
 
 /* Housekeeping interval - infrequent to preserve power savings */
 #define HOUSEKEEPING_INTERVAL_MS CONFIG_ZEPHCORE_HOUSEKEEPING_INTERVAL_MS
@@ -90,7 +96,11 @@ static uint16_t cli_line_idx;
 /* Work items for event-driven processing */
 static void cli_rx_work_fn(struct k_work *work);
 static void housekeeping_timer_fn(struct k_timer *timer);
+static void tx_drain_work_fn(struct k_work *work);
+static void initial_advert_work_fn(struct k_work *work);
 K_WORK_DEFINE(cli_rx_work, cli_rx_work_fn);
+K_WORK_DELAYABLE_DEFINE(tx_drain_work, tx_drain_work_fn);
+K_WORK_DELAYABLE_DEFINE(initial_advert_work, initial_advert_work_fn);
 
 /* Housekeeping timer for periodic tasks (noise floor calibration, etc.) */
 K_TIMER_DEFINE(housekeeping_timer, housekeeping_timer_fn, NULL);
@@ -201,10 +211,53 @@ static void lora_tx_done_callback(void *user_data)
 	ARG_UNUSED(user_data);
 	k_event_post(&mesh_events, MESH_EVENT_LORA_TX_DONE);
 }
+
+/* TX drain — Dispatcher queued a packet with a delay.
+ * Schedule a precise wake so checkSend runs when the delay expires. */
+static void tx_drain_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	k_event_post(&mesh_events, MESH_EVENT_TX_DRAIN);
+}
+
+/* Deferred initial advertisement — gives GPS time to get a fix at boot */
+static void initial_advert_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+#ifdef ZEPHCORE_LORA
+	if (repeater_mesh_ptr) {
+		LOG_INF("Sending deferred initial advertisement");
+		repeater_mesh_ptr->sendSelfAdvertisement(500, false);
+	}
+#endif
+}
+
+static void tx_queued_callback(uint32_t delay_ms, void *user_data)
+{
+	ARG_UNUSED(user_data);
+	k_work_reschedule(&tx_drain_work, K_MSEC(delay_ms));
+}
 #endif
 
 /* Global instances */
 static mesh::ZephyrRTCClock rtc_clock;
+
+/* GPS event callback - called when GPS work handlers need the main thread
+ * to process a state transition (wake from standby, fix done, timeout).
+ * Runs from system work queue context — just posts an event, no blocking. */
+static void gps_event_callback(void)
+{
+	k_event_post(&mesh_events, MESH_EVENT_GPS_ACTION);
+}
+
+/* GPS fix callback - syncs RTC from GPS time (repeater mode: time sync only) */
+static void gps_fix_callback(double lat, double lon, int64_t utc_time)
+{
+	if (utc_time > 0) {
+		LOG_INF("GPS fix: RTC sync time=%lld", utc_time);
+		rtc_clock.setCurrentTime((uint32_t)utc_time);
+	}
+}
 static RepeaterDataStore data_store;
 
 #ifdef ZEPHCORE_LORA
@@ -249,15 +302,43 @@ static void repeater_event_loop(void)
 		uint32_t events = k_event_wait(&mesh_events, MESH_EVENT_ALL, false, K_FOREVER);
 		k_event_clear(&mesh_events, events);
 
+		/* GPS state transitions must run on main thread (GNSS driver
+		 * modem_chat blocks on system work queue semaphore). */
+		if (events & MESH_EVENT_GPS_ACTION) {
+			gps_process_event();
+		}
+
 #ifdef ZEPHCORE_LORA
 		if (repeater_mesh_ptr) {
 			repeater_mesh_ptr->loop();
 		}
 #endif
 
-		/* Update display clock on housekeeping tick (if display is on) */
+		/* Periodic housekeeping — update display with live data */
 		if (events & MESH_EVENT_HOUSEKEEPING) {
 			ui_set_clock(rtc_clock.getCurrentTime());
+
+#ifdef ZEPHCORE_LORA
+			/* Refresh radio params (noise floor changes from calibration) */
+			if (repeater_mesh_ptr) {
+				NodePrefs *p = repeater_mesh_ptr->getNodePrefs();
+				ui_set_radio_params(
+					(uint32_t)(p->freq * 1000000.0f + 0.5f),
+					p->sf,
+					(uint16_t)(p->bw * 10.0f + 0.5f),
+					p->cr,
+					p->tx_power_dbm,
+					lora_radio.getNoiseFloor());
+			}
+
+			/* Battery every ~60s (12 × 5s housekeeping) */
+			static uint8_t batt_counter;
+			if (++batt_counter >= 12) {
+				batt_counter = 0;
+				ui_set_battery(zephyr_board.getBattMilliVolts(), 0);
+			}
+#endif
+
 			ui_refresh_display();
 		}
 	}
@@ -269,9 +350,21 @@ int main(void)
 	initNodePrefs(&radio_prefs);
 	strcpy(radio_prefs.node_name, "Repeater");
 
+#ifdef ZEPHCORE_LORA
+	/* Clear any stale bootloader magic from previous sessions.
+	 * Prevents nRF52 boards from re-entering bootloader after reboot. */
+	zephyr_board.clearBootloaderMagic();
+#endif
+
 	/* Wait for USB CDC to enumerate before any logging */
 	k_sleep(K_MSEC(2000));
 	LOG_INF("=== ZephCore Repeater starting ===");
+
+#if IS_ENABLED(CONFIG_ZEPHCORE_WIFI_OTA)
+	/* Confirm MCUboot image early — if we just booted after OTA,
+	 * this marks the image as good so MCUboot keeps it. */
+	wifi_ota_confirm_image();
+#endif
 
 	/* Configure LEDs */
 #if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
@@ -296,6 +389,8 @@ int main(void)
 	/* Set GPS to repeater mode: power off now, wake every 48h for time sync only.
 	 * This prevents GPS from draining power on boards that have it (e.g., Wio Tracker). */
 	if (gps_is_available()) {
+		gps_set_fix_callback(gps_fix_callback);
+		gps_set_event_callback(gps_event_callback);
 		gps_set_repeater_mode(true);
 	}
 
@@ -303,6 +398,9 @@ int main(void)
 	 * transitions to STATUS page.  Display sleeps after auto-off timeout;
 	 * user button is the only wake source for repeater. */
 	ui_init();
+#if !IS_ENABLED(CONFIG_ZEPHCORE_UI_DISPLAY)
+	oled_sleep();
+#endif
 
 	/* Log environment sensor availability */
 	if (env_sensors_available()) {
@@ -318,6 +416,7 @@ int main(void)
 	/* Set LoRa callbacks for event-driven packet processing */
 	lora_radio.setRxCallback(lora_rx_callback, nullptr);
 	lora_radio.setTxDoneCallback(lora_tx_done_callback, nullptr);
+	repeater_mesh.setTxQueuedCallback(tx_queued_callback, nullptr);
 
 	/* Load or generate identity BEFORE begin() */
 	mesh::LocalIdentity self_identity;
@@ -356,22 +455,26 @@ int main(void)
 		}
 	}
 
-	/* Apply RX boost setting from prefs (overrides radio default if user changed it) */
+	/* Apply RX boost and duty cycle settings from prefs */
 	lora_radio.setRxBoost(prefs->rx_boost != 0);
+	lora_radio.enableRxDutyCycle(prefs->rx_duty_cycle != 0);
 
 	/* Feed initial UI state from loaded prefs */
 	ui_set_node_name(prefs->node_name);
 	ui_set_radio_params(
-		(uint32_t)(prefs->freq * 1000000.0f),  /* MHz → Hz */
+		(uint32_t)(prefs->freq * 1000000.0f + 0.5f),  /* MHz → Hz */
 		prefs->sf,
-		(uint16_t)(prefs->bw * 10.0f),         /* kHz → 0.1 kHz */
+		(uint16_t)(prefs->bw * 10.0f + 0.5f),         /* kHz → 0.1 kHz */
 		prefs->cr,
 		prefs->tx_power_dbm,
 		lora_radio.getNoiseFloor());
+	ui_set_battery(zephyr_board.getBattMilliVolts(), 0);
+	ui_set_gps_available(gps_is_available());
 
-	/* Send initial zero-hop advertisement after boot */
-	LOG_INF("Sending initial advertisement...");
-	repeater_mesh.sendSelfAdvertisement(500, false);  /* 500ms delay, zero-hop */
+	/* Defer initial advertisement by 10s — gives GPS time for a quick fix.
+	 * Advert payload (including coords) is built when the work fires. */
+	LOG_INF("Initial advertisement scheduled in 10s");
+	k_work_schedule(&initial_advert_work, K_SECONDS(10));
 #endif
 
 	/* Initialize USB serial for CLI */

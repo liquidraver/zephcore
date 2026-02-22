@@ -10,6 +10,7 @@
 #include <string.h>
 #include <math.h>
 
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(lora_radio_base, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 
@@ -26,6 +27,7 @@ LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
 	  _noise_floor(DEFAULT_NOISE_FLOOR), _calibration_threshold(0),
 	  _rx_duty_cycle_enabled(IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)),
 	  _rx_boost_enabled(true),
+	  _config_cached(false),
 	  _rx_cb(nullptr), _rx_cb_user_data(nullptr),
 	  _tx_done_cb(nullptr), _tx_done_cb_user_data(nullptr),
 	  _tx_thread_running(false),
@@ -141,6 +143,10 @@ void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
 		self->_packets_recv_errors++;
 		LOG_DBG("RX error (CRC/header), total errors: %u",
 			self->_packets_recv_errors);
+		/* Driver restarted with Radio.Rx(0) — restore duty cycle */
+		if (self->_rx_duty_cycle_enabled) {
+			self->hwSetRxDutyCycle(true);
+		}
 		return;
 	}
 
@@ -164,6 +170,11 @@ void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
 	self->_last_rssi = (float)rssi;
 	self->_last_snr = (float)snr;
 	self->_packets_recv++;
+
+	/* Driver restarted with Radio.Rx(0) — restore duty cycle */
+	if (self->_rx_duty_cycle_enabled) {
+		self->hwSetRxDutyCycle(true);
+	}
 
 	if (self->_rx_cb) {
 		self->_rx_cb(self->_rx_cb_user_data);
@@ -197,23 +208,61 @@ void LoRaRadioBase::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 	cfg.packet_crc_disable = false;
 }
 
+/**
+ * Compare radio-relevant fields of two modem configs.
+ * Ignores the tx flag — that only selects TX vs RX mode, the actual
+ * modem parameters (freq, SF, BW, CR, power) are what the driver
+ * programs into registers.
+ */
+static bool configParamsEqual(const struct lora_modem_config &a,
+			      const struct lora_modem_config &b)
+{
+	/* CRITICAL: a.tx == b.tx MUST be compared — without it, switching
+	 * RX→TX skips RadioSetTxConfig(), leaving TxTimeout=0 which causes
+	 * the loramac-node software timeout to fire after 1ms and break TX. */
+	return a.frequency == b.frequency &&
+	       a.bandwidth == b.bandwidth &&
+	       a.datarate == b.datarate &&
+	       a.coding_rate == b.coding_rate &&
+	       a.preamble_len == b.preamble_len &&
+	       a.tx_power == b.tx_power &&
+	       a.tx == b.tx &&
+	       a.iq_inverted == b.iq_inverted &&
+	       a.public_network == b.public_network;
+}
+
 void LoRaRadioBase::configureRx()
 {
 	struct lora_modem_config cfg;
 	buildModemConfig(cfg, false);
+
+	if (_config_cached && configParamsEqual(cfg, _last_cfg)) {
+		LOG_DBG("configureRx: params unchanged, skipping hwConfigure");
+		return;
+	}
 
 	LOG_DBG("configureRx: freq=%u bw=%d sf=%d cr=%d pwr=%d",
 		cfg.frequency, (int)cfg.bandwidth, (int)cfg.datarate,
 		(int)cfg.coding_rate, cfg.tx_power);
 
 	hwConfigure(cfg);
+	_last_cfg = cfg;
+	_config_cached = true;
 }
 
 void LoRaRadioBase::configureTx()
 {
 	struct lora_modem_config cfg;
 	buildModemConfig(cfg, true);
+
+	if (_config_cached && configParamsEqual(cfg, _last_cfg)) {
+		LOG_DBG("configureTx: params unchanged, skipping hwConfigure");
+		return;
+	}
+
 	hwConfigure(cfg);
+	_last_cfg = cfg;
+	_config_cached = true;
 }
 
 /* ── Lifecycle ────────────────────────────────────────────────────────── */
@@ -252,6 +301,7 @@ void LoRaRadioBase::reconfigure()
 {
 	hwCancelReceive();
 	_in_recv_mode = false;
+	_config_cached = false;  /* Force full reconfigure */
 	startReceive();
 
 	uint32_t freq = _prefs ? (uint32_t)(_prefs->freq * 1000000.0f)

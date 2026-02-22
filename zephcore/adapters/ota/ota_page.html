@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MeshCore OTA</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#1a1a2e;color:#eee;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.c{background:#16213e;border-radius:12px;padding:2em;max-width:420px;width:90%;text-align:center}
+h2{margin-bottom:.5em;color:#0ff}
+.id{color:#888;font-size:.85em;margin-bottom:1.5em}
+input[type=file]{display:none}
+.btn{display:inline-block;padding:.7em 1.5em;border-radius:8px;border:none;cursor:pointer;font-size:1em;font-weight:600;transition:background .2s}
+.sel{background:#0f3460;color:#eee}
+.sel:hover{background:#1a5276}
+.upl{background:#00b894;color:#fff;margin-left:.5em}
+.upl:hover{background:#00a381}
+.upl:disabled{background:#555;cursor:default}
+.bar{width:100%;height:24px;background:#0a0a1a;border-radius:12px;margin:1.2em 0;overflow:hidden;display:none}
+.fill{height:100%;background:linear-gradient(90deg,#0ff,#00b894);border-radius:12px;transition:width .3s;width:0}
+.pct{font-size:.85em;margin-top:.3em}
+.st{margin-top:1em;font-size:.9em;min-height:1.4em}
+.ok{color:#00b894}
+.er{color:#e74c3c}
+</style>
+</head>
+<body>
+<div class="c">
+<h2>MeshCore OTA Update</h2>
+<div class="id" id="devid"></div>
+<div>
+<button class="btn sel" onclick="document.getElementById('f').click()">Select Firmware</button>
+<input type="file" id="f" accept=".bin" onchange="fs(this)">
+<button class="btn upl" id="ub" disabled onclick="up()">Upload</button>
+</div>
+<div id="fn" style="margin-top:.8em;font-size:.85em;color:#888"></div>
+<div class="bar" id="bar"><div class="fill" id="fill"></div></div>
+<div class="pct" id="pct"></div>
+<div class="st" id="st"></div>
+</div>
+<script>
+var file;
+function fs(i){file=i.files[0];if(file){document.getElementById('fn').textContent=file.name+' ('+Math.round(file.size/1024)+'KB)';document.getElementById('ub').disabled=false;document.getElementById('st').textContent='';}}
+function up(){
+if(!file)return;
+var x=new XMLHttpRequest();
+var b=document.getElementById('bar');
+var f=document.getElementById('fill');
+var p=document.getElementById('pct');
+var s=document.getElementById('st');
+b.style.display='block';
+document.getElementById('ub').disabled=true;
+s.className='st';s.textContent='Uploading...';
+x.upload.onprogress=function(e){if(e.lengthComputable){var pc=Math.round(e.loaded/e.total*100);f.style.width=pc+'%';p.textContent=pc+'% ('+Math.round(e.loaded/1024)+'/'+Math.round(e.total/1024)+'KB)';}};
+x.onload=function(){if(x.status==200){s.className='st ok';s.textContent='Success! Rebooting...';f.style.width='100%';}else{s.className='st er';s.textContent='Error: '+x.responseText;document.getElementById('ub').disabled=false;}};
+x.onerror=function(){s.className='st er';s.textContent='Upload failed — connection error';document.getElementById('ub').disabled=false;};
+x.open('POST','/upload');
+x.send(file);
+}
+fetch('/identity').then(r=>r.json()).then(d=>{document.getElementById('devid').textContent=d.name+' ('+d.board+')';}).catch(()=>{});
+</script>
+</body>
+</html>

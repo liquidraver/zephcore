@@ -13,6 +13,10 @@
 #include <string.h>
 #include <stdio.h>
 
+#if IS_ENABLED(CONFIG_ZEPHCORE_WIFI_OTA)
+#include "wifi_ota.h"
+#endif
+
 LOG_MODULE_REGISTER(zephcore_cli, CONFIG_ZEPHCORE_DATASTORE_LOG_LEVEL);
 
 // Helper: robust atoi
@@ -94,6 +98,7 @@ void CommonCLI::loadPrefs(const char* path) {
     fs_read(&file, &_prefs->adc_multiplier, sizeof(_prefs->adc_multiplier));   // 166
     fs_read(&file, _prefs->owner_info, sizeof(_prefs->owner_info));            // 170
     fs_read(&file, &_prefs->rx_boost, sizeof(_prefs->rx_boost));               // 290
+    fs_read(&file, &_prefs->rx_duty_cycle, sizeof(_prefs->rx_duty_cycle));     // 291
 
     fs_close(&file);
 
@@ -122,6 +127,7 @@ void CommonCLI::loadPrefs(const char* path) {
     _prefs->gps_enabled = constrain(_prefs->gps_enabled, (uint8_t)0, (uint8_t)1);
     _prefs->advert_loc_policy = constrain(_prefs->advert_loc_policy, (uint8_t)0, (uint8_t)2);
     _prefs->rx_boost = constrain(_prefs->rx_boost, (uint8_t)0, (uint8_t)1);
+    _prefs->rx_duty_cycle = constrain(_prefs->rx_duty_cycle, (uint8_t)0, (uint8_t)1);
 
     LOG_INF("Loaded prefs from %s", path);
 }
@@ -182,6 +188,7 @@ void CommonCLI::savePrefs(const char* path) {
     fs_write(&file, &_prefs->adc_multiplier, sizeof(_prefs->adc_multiplier));
     fs_write(&file, _prefs->owner_info, sizeof(_prefs->owner_info));
     fs_write(&file, &_prefs->rx_boost, sizeof(_prefs->rx_boost));
+    fs_write(&file, &_prefs->rx_duty_cycle, sizeof(_prefs->rx_duty_cycle));
 
     fs_close(&file);
     LOG_INF("Saved prefs to %s", path);
@@ -245,9 +252,33 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         strcpy(reply, "OK - rebooting to UF2 DFU");
         scheduleReboot(REBOOT_DFU);
     } else if (memcmp(command, "start ota", 9) == 0) {
-        /* Reboot into Adafruit BLE OTA DFU mode */
+#if IS_ENABLED(CONFIG_ZEPHCORE_WIFI_OTA)
+        /* ESP32: Start WiFi AP + HTTP OTA server (no reboot) */
+        int ota_ret = wifi_ota_start(_prefs->node_name, _board->getManufacturerName());
+        if (ota_ret == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "Started: http://%s/update",
+                     CONFIG_ZEPHCORE_OTA_AP_IP);
+        } else if (ota_ret == -EALREADY) {
+            strcpy(reply, "OTA already active");
+        } else {
+            snprintf(reply, CLI_REPLY_SIZE, "Error starting OTA: %d", ota_ret);
+        }
+#else
+        /* nRF52: Reboot into Adafruit BLE OTA DFU mode */
         strcpy(reply, "OK - rebooting to BLE OTA DFU");
         scheduleReboot(REBOOT_OTA);
+#endif
+    } else if (memcmp(command, "stop ota", 8) == 0) {
+#if IS_ENABLED(CONFIG_ZEPHCORE_WIFI_OTA)
+        if (wifi_ota_is_active()) {
+            wifi_ota_stop();
+            strcpy(reply, "OTA stopped");
+        } else {
+            strcpy(reply, "OTA not active");
+        }
+#else
+        strcpy(reply, "Not supported");
+#endif
     } else if (memcmp(command, "reboot", 6) == 0) {
         strcpy(reply, "OK - rebooting");
         scheduleReboot(REBOOT_NORMAL);
@@ -577,6 +608,17 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             snprintf(reply, CLI_REPLY_SIZE, "OK - rxboost=%d (reboot to apply)", _prefs->rx_boost);
         } else if (memcmp(config, "rxboost", 7) == 0 && (config[7] == 0 || config[7] == ' ')) {
             snprintf(reply, CLI_REPLY_SIZE, "> %d", _prefs->rx_boost);
+        } else if (memcmp(config, "rxduty ", 7) == 0) {
+            if (memcmp(&config[7], "on", 2) == 0) {
+                _prefs->rx_duty_cycle = 1;
+            } else {
+                _prefs->rx_duty_cycle = 0;
+            }
+            savePrefs();
+            snprintf(reply, CLI_REPLY_SIZE, "OK - rxduty=%s (reboot to apply)",
+                     _prefs->rx_duty_cycle ? "on" : "off");
+        } else if (memcmp(config, "rxduty", 6) == 0 && (config[6] == 0 || config[6] == ' ')) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->rx_duty_cycle ? "on" : "off");
         } else {
             snprintf(reply, CLI_REPLY_SIZE, "unknown config: %s", config);
         }

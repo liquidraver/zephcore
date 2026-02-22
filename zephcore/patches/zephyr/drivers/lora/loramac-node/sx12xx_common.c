@@ -41,6 +41,12 @@ static struct sx12xx_data {
 	struct lora_modem_config tx_cfg;
 	atomic_t modem_usage;
 	struct sx12xx_rx_params rx_params;
+	/* Fast TX↔RX switching: cache last full config to detect
+	 * direction-only changes and skip redundant SPI reconfigure. */
+	struct lora_modem_config last_cfg;
+	bool last_cfg_valid;
+	bool tx_configured;   /* RadioSetTxConfig has been called with current params */
+	bool rx_configured;   /* RadioSetRxConfig has been called with current params */
 } dev_data;
 
 int __sx12xx_configure_pin(const struct gpio_dt_spec *gpio, gpio_flags_t flags)
@@ -382,6 +388,21 @@ int sx12xx_lora_recv_async(const struct device *dev, lora_recv_cb cb, void *user
 	return 0;
 }
 
+/* Check if only the TX/RX direction changed (all radio params identical). */
+static bool sx12xx_only_direction_changed(const struct lora_modem_config *a,
+					  const struct lora_modem_config *b)
+{
+	return a->frequency == b->frequency &&
+	       a->bandwidth == b->bandwidth &&
+	       a->datarate == b->datarate &&
+	       a->coding_rate == b->coding_rate &&
+	       a->preamble_len == b->preamble_len &&
+	       a->tx_power == b->tx_power &&
+	       a->iq_inverted == b->iq_inverted &&
+	       a->public_network == b->public_network &&
+	       a->tx != b->tx;
+}
+
 int sx12xx_lora_config(const struct device *dev,
 		       struct lora_modem_config *config)
 {
@@ -394,6 +415,36 @@ int sx12xx_lora_config(const struct device *dev,
 		LOG_ERR("Unsupported bandwidth: %d", config->bandwidth);
 		return ret;
 	}
+
+	/* Fast path: if only TX↔RX direction changed and the target direction
+	 * was already configured once with the same params, skip the full
+	 * RadioSetTxConfig/RadioSetRxConfig (saves ~35ms of SPI traffic).
+	 * RadioSetTxConfig MUST have been called at least once to set
+	 * TxTimeout=4000; RadioSetRxConfig MUST have been called at least
+	 * once to set PayloadLength/SymbTimeout/IQ polarity workaround. */
+	if (dev_data.last_cfg_valid &&
+	    sx12xx_only_direction_changed(config, &dev_data.last_cfg)) {
+		if (config->tx && dev_data.tx_configured) {
+			LOG_DBG("lora_config: fast TX switch (skip full reconfig)");
+			if (!modem_acquire(&dev_data)) {
+				return -EBUSY;
+			}
+			memcpy(&dev_data.tx_cfg, config, sizeof(dev_data.tx_cfg));
+			dev_data.last_cfg = *config;
+			modem_release(&dev_data);
+			return 0;
+		}
+		if (!config->tx && dev_data.rx_configured) {
+			LOG_DBG("lora_config: fast RX switch (skip full reconfig)");
+			if (!modem_acquire(&dev_data)) {
+				return -EBUSY;
+			}
+			dev_data.last_cfg = *config;
+			modem_release(&dev_data);
+			return 0;
+		}
+	}
+
 	LOG_INF("lora_config: bw_enum=%d bw_idx=%u tx=%d freq=%u sf=%d",
 		config->bandwidth, bw_idx, config->tx, config->frequency,
 		config->datarate);
@@ -413,15 +464,20 @@ int sx12xx_lora_config(const struct device *dev,
 				  bw_idx, config->datarate,
 				  config->coding_rate, config->preamble_len,
 				  false, crc, 0, 0, config->iq_inverted, 4000);
+		dev_data.tx_configured = true;
 	} else {
 		/* TODO: Get symbol timeout value from config parameters */
 		Radio.SetRxConfig(MODEM_LORA, bw_idx,
 				  config->datarate, config->coding_rate,
 				  0, config->preamble_len, 10, false, 0,
 				  crc, false, 0, config->iq_inverted, true);
+		dev_data.rx_configured = true;
 	}
 
 	Radio.SetPublicNetwork(config->public_network);
+
+	dev_data.last_cfg = *config;
+	dev_data.last_cfg_valid = true;
 
 	modem_release(&dev_data);
 	return 0;

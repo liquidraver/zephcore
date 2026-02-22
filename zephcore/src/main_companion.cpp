@@ -71,7 +71,8 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #define MESH_EVENT_HOUSEKEEPING  BIT(3)  /* Periodic housekeeping (noise floor, etc.) */
 #define MESH_EVENT_UI_ACTION     BIT(4)  /* Button action from UI (deferred to mesh thread) */
 #define MESH_EVENT_GPS_ACTION    BIT(5)  /* GPS state change (must run on main thread!) */
-#define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_BLE_RX | MESH_EVENT_HOUSEKEEPING | MESH_EVENT_UI_ACTION | MESH_EVENT_GPS_ACTION)
+#define MESH_EVENT_TX_DRAIN      BIT(6)  /* Outbound packet delay expired, run checkSend */
+#define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_BLE_RX | MESH_EVENT_HOUSEKEEPING | MESH_EVENT_UI_ACTION | MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN)
 
 /* Housekeeping interval - infrequent to preserve power savings */
 #define HOUSEKEEPING_INTERVAL_MS CONFIG_ZEPHCORE_HOUSEKEEPING_INTERVAL_MS
@@ -308,6 +309,22 @@ static void lora_tx_done_callback(void *user_data)
 	/* Signal event to wake mesh loop for TX completion handling */
 	k_event_post(&mesh_events, MESH_EVENT_LORA_TX_DONE);
 }
+
+/* TX drain — Dispatcher queued a packet with a delay.
+ * Schedule a precise wake so checkSend runs when the delay expires. */
+static void tx_drain_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	k_event_post(&mesh_events, MESH_EVENT_TX_DRAIN);
+}
+
+static K_WORK_DELAYABLE_DEFINE(tx_drain_work, tx_drain_work_fn);
+
+static void tx_queued_callback(uint32_t delay_ms, void *user_data)
+{
+	ARG_UNUSED(user_data);
+	k_work_reschedule(&tx_drain_work, K_MSEC(delay_ms));
+}
 #endif
 
 static mesh::ZephyrRTCClock rtc_clock;
@@ -471,6 +488,7 @@ int main(void)
 	companion_mesh.prefs.tx_power_dbm = 22;
 	companion_mesh.prefs.rx_delay_base = 0.0f;  /* Disabled for companion */
 	companion_mesh.prefs.airtime_factor = 10.0f; /* 10% duty cycle (EU 868 default) */
+	companion_mesh.prefs.rx_duty_cycle = 1;     /* Companions: duty cycle ON by default (power save) */
 
 	/* Generate default node name from hardware device ID */
 	uint8_t dev_id[8];
@@ -537,6 +555,7 @@ int main(void)
 	/* Set LoRa callbacks for event-driven packet processing */
 	lora_radio.setRxCallback(lora_rx_callback, nullptr);
 	lora_radio.setTxDoneCallback(lora_tx_done_callback, nullptr);
+	companion_mesh.setTxQueuedCallback(tx_queued_callback, nullptr);
 
 	/* Start mesh */
 	companion_mesh.begin();
@@ -592,8 +611,9 @@ int main(void)
 		}
 	}
 
-	/* Apply RX boost setting from prefs (overrides radio default if user changed it) */
+	/* Apply RX boost and duty cycle settings from prefs */
 	lora_radio.setRxBoost(companion_mesh.prefs.rx_boost != 0);
+	lora_radio.enableRxDutyCycle(companion_mesh.prefs.rx_duty_cycle != 0);
 
 	/* Initialize mesh event object */
 	k_event_init(&mesh_events);

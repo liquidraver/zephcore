@@ -379,6 +379,39 @@ config ZEPHCORE_GPS_FIX_TIMEOUT_SEC
 
 endmenu
 
+menu "WiFi OTA Update"
+
+config ZEPHCORE_WIFI_OTA
+	bool "WiFi OTA firmware update"
+	depends on ZEPHCORE_ROLE_REPEATER
+	help
+	  Enable WiFi AP + HTTP server for OTA firmware updates.
+	  Auto-enabled for ESP32 repeater builds via wifi_ota.conf.
+
+	  When "start ota" is issued, starts WiFi AP "MeshCore-OTA"
+	  and HTTP server. User uploads firmware via browser at
+	  http://192.168.100.1/update. Requires MCUboot (--sysbuild).
+
+if ZEPHCORE_WIFI_OTA
+
+config ZEPHCORE_OTA_AP_SSID
+	string "WiFi AP SSID for OTA"
+	default "MeshCore-OTA"
+	help
+	  SSID of the WiFi access point started for OTA updates.
+	  Open network (no password), matching Arduino behavior.
+
+config ZEPHCORE_OTA_AP_IP
+	string "WiFi AP static IP address"
+	default "192.168.100.1"
+	help
+	  Static IP address assigned to the WiFi AP interface.
+	  DHCP server hands out addresses starting at .10.
+
+endif # ZEPHCORE_WIFI_OTA
+
+endmenu
+
 menu "UI Configuration"
 
 config ZEPHCORE_UI_BUTTONS

@@ -38,6 +38,8 @@ Dispatcher::Dispatcher(Radio &radio, MillisecondClock &ms, PacketManager &mgr)
 	prev_isrecv_mode = true;
 	n_sent_flood = n_sent_direct = 0;
 	n_recv_flood = n_recv_direct = 0;
+	_tx_queued_cb = nullptr;
+	_tx_queued_user_data = nullptr;
 }
 
 void Dispatcher::begin()
@@ -277,6 +279,9 @@ void Dispatcher::processRecvPacket(Packet *pkt)
 		uint8_t priority = (uint8_t)((action >> 24) - 1);
 		uint32_t delay = action & 0xFFFFFF;
 		_mgr->queueOutbound(pkt, priority, futureMillis((int)delay));
+		if (_tx_queued_cb && delay > 0) {
+			_tx_queued_cb(delay, _tx_queued_user_data);
+		}
 	}
 }
 
@@ -410,6 +415,9 @@ void Dispatcher::sendPacket(Packet *packet, uint8_t priority, uint32_t delay_mil
 	} else {
 		_mgr->queueOutbound(packet, priority, futureMillis((int)delay_millis));
 		LOG_INF("sendPacket: queued outbound count=%d", _mgr->getOutboundCount((uint32_t)_ms->getMillis()));
+		if (_tx_queued_cb && delay_millis > 0) {
+			_tx_queued_cb(delay_millis, _tx_queued_user_data);
+		}
 	}
 }
 

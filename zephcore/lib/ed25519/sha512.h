@@ -5,6 +5,12 @@
 
 #include "fixedint.h"
 
+/* Prefix to avoid symbol collision with ESP32 WPA supplicant's sha512 */
+#define sha512_init    ed25519_sha512_init
+#define sha512_final   ed25519_sha512_final
+#define sha512_update  ed25519_sha512_update
+#define sha512         ed25519_sha512
+
 /* state */
 typedef struct sha512_context_ {
     uint64_t  length, state[8];

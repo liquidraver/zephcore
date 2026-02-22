@@ -77,3 +77,8 @@
 
 /* LittleFS auto-mount — standard /lfs mount point */
 #include "../../common/filesystem.dtsi"
+
+/* WiFi — required for OTA firmware updates */
+&wifi {
+	status = "okay";
+};

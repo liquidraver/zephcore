@@ -145,6 +145,10 @@ protected:
 	bool _rx_duty_cycle_enabled;
 	bool _rx_boost_enabled;
 
+	/* Config cache — skip redundant hwConfigure() on TX↔RX transitions */
+	struct lora_modem_config _last_cfg;
+	bool _config_cached;
+
 	/* Static RX callback — passed to lora_recv_async() by subclass hwStartReceive() */
 	static void rxCallbackStatic(const struct device *dev, uint8_t *data,
 				     uint16_t size, int16_t rssi, int8_t snr,
