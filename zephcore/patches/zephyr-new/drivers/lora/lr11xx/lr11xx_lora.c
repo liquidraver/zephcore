@@ -258,8 +258,14 @@ static void lr11xx_apply_rx_duty_cycle(struct lr11xx_data *data)
 		return;
 	}
 
-	uint32_t symbol_us = ((uint32_t)(1 << sf) * 1000) / (uint32_t)bw_khz;
-	uint32_t sleep_period_us = sleep_symbols * symbol_us;
+	uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
+
+	/* Shave 2 symbols off sleep so the wake window always has enough
+	   preamble overlap for detection.  Without this the margin is zero
+	   and any TCXO drift or crystal error causes missed packets. */
+	int16_t sleep_symbols_safe = sleep_symbols - 2;
+	if (sleep_symbols_safe < 1) sleep_symbols_safe = 1;
+	uint32_t sleep_period_us = (uint16_t)sleep_symbols_safe * symbol_us;
 	uint32_t preamble_total_us = (preamble_len + 1) * symbol_us;
 	int32_t wake_calc1 = ((int32_t)preamble_total_us -
 			      ((int32_t)sleep_period_us - 1000)) / 2;

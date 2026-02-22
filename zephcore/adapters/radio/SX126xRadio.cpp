@@ -201,8 +201,15 @@ void SX126xRadio::applyRxDutyCycleIfEnabled()
 		return;
 	}
 
-	uint32_t symbol_us = ((uint32_t)(1 << sf) * 1000) / (uint32_t)bw_khz;
-	uint32_t sleep_period_us = sleep_symbols * symbol_us;
+	uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
+
+	/* Shave 2 symbols off the sleep period so the wake window always overlaps
+	   with enough preamble for detection, even in the worst-case arrival timing.
+	   Without this margin the math lands at exactly zero — any TCXO drift,
+	   crystal error, or processing latency causes missed packets. */
+	int16_t sleep_symbols_safe = sleep_symbols - 2;
+	if (sleep_symbols_safe < 1) sleep_symbols_safe = 1;
+	uint32_t sleep_period_us = (uint16_t)sleep_symbols_safe * symbol_us;
 
 	uint32_t preamble_total_us = (preamble_len + 1) * symbol_us;
 	int32_t wake_calc1 = ((int32_t)preamble_total_us -
