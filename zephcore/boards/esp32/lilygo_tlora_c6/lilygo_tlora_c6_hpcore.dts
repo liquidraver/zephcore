@@ -1,0 +1,79 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * LilyGo T-LoRa C6 (T3-C6) — ESP32-C6-MINI-1U, 4MB flash
+ *
+ * Hardware:
+ *   MCU:     ESP32-C6 (RISC-V single-core, BLE 5.0, Wi-Fi 6, 802.15.4)
+ *   Flash:   4 MB
+ *   Radio:   SX1262 LoRa on SPI2
+ *   LED:     GPIO7 (active HIGH)
+ *   Console: USB-Serial/JTAG (built-in)
+ */
+
+/dts-v1/;
+
+#include <espressif/esp32c6/esp32c6_wroom_n4.dtsi>
+#include "lilygo_tlora_c6-pinctrl.dtsi"
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <espressif/partitions_0x0_default.dtsi>
+
+/ {
+	model = "LilyGo T-LoRa C6";
+	compatible = "lilygo,tlora-c6";
+
+	chosen {
+		zephyr,sram = &sramhp;
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,ieee802154 = &ieee802154;
+	};
+
+	aliases {
+		watchdog0 = &wdt0;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
+
+&trng0 {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&wdt0 {
+	status = "okay";
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+};
+
+&spi2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim2_default>;
+	pinctrl-names = "default";
+};
+
+&wifi {
+	status = "okay";
+};
+
+&ieee802154 {
+	status = "okay";
+};
+
+&esp32_bt_hci {
+	status = "okay";
+};

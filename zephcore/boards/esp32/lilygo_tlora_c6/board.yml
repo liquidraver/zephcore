@@ -1,0 +1,6 @@
+board:
+  name: lilygo_tlora_c6
+  full_name: LilyGo T-LoRa C6
+  vendor: lilygo
+  socs:
+    - name: esp32c6

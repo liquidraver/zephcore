@@ -1,0 +1,92 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * LilyGo T-LoRa C6 (T3-C6) + SX1262 LoRa
+ *
+ * Pin mapping (from Arduino MeshCore variants/lilygo_tlora_c6):
+ *   SPI:   SCLK=GPIO6, MISO=GPIO1, MOSI=GPIO0, NSS=GPIO18
+ *   LoRa:  DIO1=GPIO23, BUSY=GPIO22, RESET=GPIO21
+ *   RF:    RXEN=GPIO15, TXEN=GPIO14, DIO2 as RF switch
+ *   I2C:   SDA=GPIO8, SCL=GPIO9
+ *   LED:   GPIO7 (active HIGH)
+ *
+ * Console: USB-Serial/JTAG (usb_serial)
+ */
+
+/ {
+	aliases {
+		lora0 = &lora;
+		led0 = &user_led;
+	};
+
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		user_led: led_0 {
+			gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
+			label = "User LED";
+		};
+	};
+};
+
+/* SX1262 on SPI2 */
+&spi2 {
+	cs-gpios = <&gpio0 18 GPIO_ACTIVE_LOW>;   /* GPIO18 NSS */
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		/* LoRa control pins */
+		reset-gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;               /* GPIO21 */
+		busy-gpios  = <&gpio0 22 GPIO_ACTIVE_HIGH>;               /* GPIO22 */
+		dio1-gpios  = <&gpio0 23 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;  /* GPIO23 */
+
+		/* RF switch: RXEN + TXEN GPIOs, plus DIO2 as RF switch */
+		rx-enable-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;  /* GPIO15 RXEN */
+		tx-enable-gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;  /* GPIO14 TXEN */
+		dio2-tx-enable;
+
+		/* TCXO 1.8V via DIO3 */
+		dio3-tcxo-voltage = <2>;
+		tcxo-power-startup-delay-ms = <10>;
+
+		/* RX boosted mode for better sensitivity */
+		rx-boosted;
+	};
+};
+
+/*
+ * Flash partitions — split default storage into NVS + LittleFS.
+ * Standard ESP32 4MB layout:
+ *   0x3B0000 - 0x3B2000 (8KB)   NVS (BLE bonds)
+ *   0x3B2000 - 0x3E0000 (184KB) LittleFS (identity, contacts)
+ */
+/delete-node/ &storage_partition;
+
+&flash0 {
+	partitions {
+		/* NVS 8KB for BLE bonds + settings */
+		storage_partition: partition@3b0000 {
+			label = "storage";
+			reg = <0x3B0000 0x2000>;
+		};
+
+		/* LittleFS 184KB for DataStore */
+		lfs_partition: partition@3b2000 {
+			label = "lfs";
+			reg = <0x3B2000 0x2E000>;
+		};
+	};
+};
+
+/* LittleFS auto-mount — standard /lfs mount point */
+#include "../../common/filesystem.dtsi"
+
+/* WiFi — required for OTA firmware updates */
+&wifi {
+	status = "okay";
+};

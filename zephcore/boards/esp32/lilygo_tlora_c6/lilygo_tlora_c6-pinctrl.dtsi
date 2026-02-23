@@ -1,0 +1,38 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * LilyGo T-LoRa C6 — Pin Control Definitions
+ *
+ * Pin mapping (from Arduino MeshCore variants/lilygo_tlora_c6):
+ *   LoRa SPI2:  SCLK=GPIO6, MOSI=GPIO0, MISO=GPIO1, NSS=GPIO18
+ *   I2C0:       SDA=GPIO8, SCL=GPIO9
+ *   Console:    USB-Serial/JTAG (built-in)
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <zephyr/dt-bindings/pinctrl/esp32c6-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32c6-gpio-sigmap.h>
+
+&pinctrl {
+	/* SPI2 — LoRa SX1262 (CS handled via cs-gpios, not pinctrl) */
+	spim2_default: spim2_default {
+		group1 {
+			pinmux = <SPIM2_MISO_GPIO1>,
+				 <SPIM2_SCLK_GPIO6>;
+		};
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO0>;
+			output-low;
+		};
+	};
+
+	/* I2C0 — expansion header (sensors, etc.) */
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO8>,
+				 <I2C0_SCL_GPIO9>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+};
