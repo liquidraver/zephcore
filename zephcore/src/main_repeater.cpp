@@ -250,15 +250,34 @@ static void gps_event_callback(void)
 	k_event_post(&mesh_events, MESH_EVENT_GPS_ACTION);
 }
 
-/* GPS fix callback - syncs RTC from GPS time (repeater mode: time sync only) */
+static RepeaterDataStore data_store;
+
+/* GPS fix callback - syncs RTC from GPS time and updates node position */
 static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 {
 	if (utc_time > 0) {
 		LOG_INF("GPS fix: RTC sync time=%lld", utc_time);
 		rtc_clock.setCurrentTime((uint32_t)utc_time);
 	}
+
+#ifdef ZEPHCORE_LORA
+	/* Update node position for mesh advertising */
+	NodePrefs *prefs = repeater_mesh_ptr ? repeater_mesh_ptr->getNodePrefs() : nullptr;
+	if (prefs && (lat != prefs->node_lat || lon != prefs->node_lon)) {
+		prefs->node_lat = lat;
+		prefs->node_lon = lon;
+		int lat_deg = (int)lat;
+		int lon_deg = (int)lon;
+		int lat_frac = (int)((lat - lat_deg) * 1000000);
+		int lon_frac = (int)((lon - lon_deg) * 1000000);
+		if (lat_frac < 0) lat_frac = -lat_frac;
+		if (lon_frac < 0) lon_frac = -lon_frac;
+		LOG_INF("GPS fix: position updated lat=%d.%06d lon=%d.%06d",
+			lat_deg, lat_frac, lon_deg, lon_frac);
+		data_store.savePrefs(*prefs);
+	}
+#endif
 }
-static RepeaterDataStore data_store;
 
 #ifdef ZEPHCORE_LORA
 static mesh::ZephyrBoard zephyr_board;
