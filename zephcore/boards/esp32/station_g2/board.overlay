@@ -53,11 +53,7 @@
 		dio3-tcxo-voltage = <2>;
 		tcxo-power-startup-delay-ms = <10>;
 
-		/*
-		 * RX boosted mode DISABLED — Station G2 wiki warns against it:
-		 * "Impact of LoRa node dense areas/high noise environments on RF performance"
-		 * https://wiki.uniteng.com/en/meshtastic/station-g2
-		 */
+		rx-boosted;
 	};
 };
 

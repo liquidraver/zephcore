@@ -284,6 +284,7 @@
 		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
 		tcxo-power-startup-delay-ms = <5>;
 		spi-max-frequency = <8000000>;
+		rx-boosted;
 	};
 };
 

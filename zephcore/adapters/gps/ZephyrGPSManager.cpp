@@ -22,7 +22,9 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/uart.h>
+#if defined(CONFIG_SOC_NRF52840)
 #include <nrfx.h>
+#endif
 
 LOG_MODULE_REGISTER(zephcore_gps, CONFIG_ZEPHCORE_GPS_LOG_LEVEL);
 

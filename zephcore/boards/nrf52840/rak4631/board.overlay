@@ -64,6 +64,7 @@
 
 &lora {
        dio1-gpios = <&gpio1 15 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+       rx-boosted;
 };
 
 /*
