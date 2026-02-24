@@ -37,6 +37,10 @@ static void dio1_work_handler(struct k_work *work)
     }
 }
 
+/* Track the last SPI opcode for debugging BUSY stuck */
+static uint16_t last_opcode;
+static int64_t last_cmd_time;
+
 /**
  * @brief Wait until BUSY pin goes low or timeout
  */
@@ -47,8 +51,10 @@ static lr11xx_hal_status_t wait_on_busy(struct lr11xx_hal_context *ctx)
 
     while (gpio_pin_get_dt(&ctx->busy)) {
         if ((k_uptime_get() - start) > LR11XX_BUSY_TIMEOUT_MS) {
-            LOG_ERR("BUSY timeout after %d loops (%dms)!",
-                    loops, LR11XX_BUSY_TIMEOUT_MS);
+            LOG_ERR("BUSY timeout! last_op=0x%04x sent_at=%lld (%lld ms ago) DIO1=%d",
+                    last_opcode, last_cmd_time,
+                    k_uptime_get() - last_cmd_time,
+                    gpio_pin_get_dt(&ctx->dio1));
             return LR11XX_HAL_STATUS_ERROR;
         }
         k_busy_wait(100);  /* 100us */
@@ -178,7 +184,14 @@ lr11xx_hal_status_t lr11xx_hal_write(const void *context, const uint8_t *command
     struct lr11xx_hal_context *ctx = (struct lr11xx_hal_context *)context;
     int ret;
 
+    /* Track opcode for BUSY timeout diagnostics */
+    if (command_length >= 2) {
+        last_opcode = ((uint16_t)command[0] << 8) | command[1];
+    }
+    last_cmd_time = k_uptime_get();
+
     if (check_device_ready(ctx) != LR11XX_HAL_STATUS_OK) {
+        LOG_ERR("hal_write: device not ready, op=0x%04x", last_opcode);
         return LR11XX_HAL_STATUS_ERROR;
     }
 
@@ -222,12 +235,19 @@ lr11xx_hal_status_t lr11xx_hal_read(const void *context, const uint8_t *command,
     struct lr11xx_hal_context *ctx = (struct lr11xx_hal_context *)context;
     int ret;
 
+    /* Track opcode for BUSY timeout diagnostics */
+    if (command_length >= 2) {
+        last_opcode = ((uint16_t)command[0] << 8) | command[1];
+    }
+    last_cmd_time = k_uptime_get();
+
     /* Special case: crypto restore command needs delay */
     if (command_length >= 2 && command[0] == 0x05 && command[1] == 0x0B) {
         k_busy_wait(1000);
     }
 
     if (check_device_ready(ctx) != LR11XX_HAL_STATUS_OK) {
+        LOG_ERR("hal_read: device not ready, op=0x%04x", last_opcode);
         return LR11XX_HAL_STATUS_ERROR;
     }
 

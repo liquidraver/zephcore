@@ -489,6 +489,7 @@ int main(void)
 	companion_mesh.prefs.rx_delay_base = 0.0f;  /* Disabled for companion */
 	companion_mesh.prefs.airtime_factor = 10.0f; /* 10% duty cycle (EU 868 default) */
 	companion_mesh.prefs.rx_duty_cycle = 1;     /* Companions: duty cycle ON by default (power save) */
+	companion_mesh.prefs.rx_boost = 1;          /* Default: boosted RX (+3dB sensitivity, +2mA) */
 
 	/* Generate default node name from hardware device ID */
 	uint8_t dev_id[8];

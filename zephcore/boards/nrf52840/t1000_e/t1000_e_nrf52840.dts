@@ -202,9 +202,14 @@
 	pinctrl-names = "default", "sleep";
 };
 
-/* Airoha AG3335 GNSS on UART0 - 115200 baud (PAIR protocol)
- * Uses Zephyr quectel,lc76g driver (LC76G is built on AG3335,
- * same PAIR command set for constellation config, fix rate, etc.) */
+/* Airoha AG3335 GNSS on UART0 - 115200 baud
+ *
+ * Using gnss-nmea-generic (passive NMEA listener) instead of quectel,lc76g:
+ * - Arduino reference code just listens for NMEA, never sends PAIR commands
+ * - AG3335 outputs NMEA autonomously at factory defaults
+ * - Eliminates 10s+ blocking resume_script timeout on PAIR command
+ * - Trade-off: no gnss_set_enabled_systems() / gnss_set_fix_rate() API
+ *   (AG3335 defaults are fine: GPS+GLONASS+Galileo+BeiDou, 1Hz) */
 &uart0 {
 	compatible = "nordic,nrf-uarte";
 	status = "okay";
@@ -214,8 +219,11 @@
 	pinctrl-names = "default", "sleep";
 
 	gnss: gnss {
-		compatible = "quectel,lc76g";
-		pps-mode = "GNSS_PPS_MODE_DISABLED";
+		compatible = "gnss-nmea-generic";
+		/* Defer driver init — AG3335 needs GPIO power-up
+		 * (GPS_EN, GPS_VRTC_EN, GPS_RESET) before NMEA output.
+		 * ZephyrGPSManager handles power-up then calls device_init(). */
+		zephyr,deferred-init;
 	};
 };
 

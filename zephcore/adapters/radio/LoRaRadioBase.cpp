@@ -477,11 +477,15 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 		return;
 	}
 
-	/* RX duty cycle: radio alternates HW RX/sleep autonomously.
-	 * During sleep windows hwGetCurrentRSSI() returns garbage (0 or very
-	 * high) — the sampling filter rejects those, and the count>=32
-	 * threshold ensures we only update when enough valid samples exist. */
+	/* Skip when duty cycle is active — the radio alternates between
+	 * short RX windows and sleep.  GetRssiInst sent during the sleep
+	 * phase hangs the SPI bus (BUSY stuck high for the full 3 s timeout)
+	 * because the chip cannot process commands while asleep. */
+	if (_rx_duty_cycle_enabled) {
+		return;
+	}
 
+	int64_t start = k_uptime_get();
 	int sum = 0;
 	int count = 0;
 	for (int i = 0; i < NUM_NOISE_FLOOR_SAMPLES; i++) {
@@ -494,13 +498,15 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 			count++;
 		}
 	}
+	int64_t elapsed = k_uptime_get() - start;
 
 	if (count >= NUM_NOISE_FLOOR_SAMPLES / 2) {
 		_noise_floor = sum / count;
 		if (_noise_floor < -120) _noise_floor = -120;
 		if (_noise_floor > -50) _noise_floor = -50;
-		LOG_DBG("noise floor: %d dBm (%d samples)", _noise_floor, count);
 	}
+	LOG_INF("noise_floor_cal: %d samples/%d total, floor=%d, took %lld ms",
+		count, NUM_NOISE_FLOOR_SAMPLES, _noise_floor, elapsed);
 }
 
 void LoRaRadioBase::resetAGC()

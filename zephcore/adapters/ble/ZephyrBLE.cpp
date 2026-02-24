@@ -108,9 +108,13 @@ static void kick_tx_drain(void);
 /* ========== GATT Service ========== */
 
 /*
- * Secure NUS service with MITM-authenticated permissions.
- * Unlike the default NUS service, this requires PIN pairing before
- * any NUS communication is allowed (matches Arduino's SECMODE_ENC_WITH_MITM).
+ * NUS service — secured with AUTHEN permissions.
+ * Matches Arduino's SECMODE_ENC_WITH_MITM on bleuart.
+ *
+ * When the phone tries to subscribe (CCC write) or send data (RX write),
+ * Zephyr returns ATT_ERR_AUTHENTICATION. The phone's BLE stack should
+ * then initiate pairing (PIN dialog). After pairing succeeds,
+ * security_changed() fires at L3+ and the phone retries the operation.
  */
 BT_GATT_SERVICE_DEFINE(secure_nus_svc,
 	BT_GATT_PRIMARY_SERVICE(BT_UUID_NUS_SERVICE),
@@ -161,7 +165,7 @@ static void ble_tx_complete_cb(struct bt_conn *conn, void *user_data)
 static int secure_nus_send(struct bt_conn *conn, const void *data, uint16_t len)
 {
 	struct bt_gatt_notify_params params = {
-		.attr = &secure_nus_svc.attrs[1],  /* TX characteristic */
+		.attr = &secure_nus_svc.attrs[2],  /* TX characteristic value (not declaration) */
 		.data = data,
 		.len = len,
 		.func = ble_tx_complete_cb,
@@ -224,7 +228,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		LOG_WRN("connection failed: %s err 0x%02x", addr, err);
 		return;
 	}
-	LOG_DBG("%s", addr);
+	LOG_INF("connected: %s", addr);
 	current_conn = bt_conn_ref(conn);
 
 	/* Cancel slow advertising work - we're connected now */
@@ -249,25 +253,27 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	}
 #endif
 
-	/* Proactively request authenticated encryption (MITM).
-	 * - Bonded device: re-encrypts with stored keys (instant, no user interaction)
-	 * - New device: triggers passkey pairing dialog on the central
+	/* Do NOT proactively request security here.
 	 *
-	 * L3 = authenticated pairing with MITM protection. iOS/Android will
-	 * negotiate Secure Connections (LESC) automatically when supported.
-	 * L4 (SC-only) is NOT used because Windows never shows the passkey
-	 * dialog for SC pairing — it only works with Legacy passkey entry.
+	 * Arduino reference: the SoftDevice never sends SMP Security Request
+	 * on connection. Pairing is triggered naturally when the phone tries
+	 * to access a GATT characteristic with AUTHEN permissions — the stack
+	 * returns "Insufficient Authentication" and the phone's BLE stack
+	 * initiates pairing (PIN dialog).
 	 *
-	 * This is needed because some BLE stacks (Windows) don't automatically
-	 * initiate pairing when they get "Insufficient Authentication" from a
-	 * protected characteristic. By requesting security here, all platforms
-	 * (iOS, Android, Windows) get the pairing prompt immediately.
+	 * Our NUS service has BT_GATT_PERM_*_AUTHEN on CCC and RX, so
+	 * pairing triggers automatically when the MeshCore app accesses them.
 	 *
-	 * security_changed() callback handles the rest once encryption is up. */
-	int sec_err = bt_conn_set_security(conn, BT_SECURITY_L3);
-	if (sec_err && sec_err != -EALREADY) {
-		LOG_WRN("Failed to request security: %d", sec_err);
-	}
+	 * The old bt_conn_set_security(L3) call sent a proactive SMP Security
+	 * Request that the MeshCore app doesn't handle — phone would connect
+	 * but never show a PIN dialog, causing a "freeze."
+	 *
+	 * For bonded reconnects, Zephyr auto-encrypts with stored keys when
+	 * CONFIG_BT_SMP and CONFIG_BT_BONDABLE are enabled.
+	 *
+	 * NOTE: If Windows support is needed later, Windows may not initiate
+	 * pairing from "Insufficient Authentication" — add a platform-specific
+	 * Security Request path for Windows clients only. */
 
 	/* Notify main of BLE connection */
 	if (ble_cbs && ble_cbs->on_connected) {
@@ -279,7 +285,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-	LOG_DBG("%s reason 0x%02x", addr, reason);
+	LOG_INF("disconnected: %s reason 0x%02x", addr, reason);
 
 	if (conn == current_conn) {
 		bt_conn_unref(current_conn);
@@ -332,19 +338,27 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 	}
 	LOG_INF("%s level %u", addr, level);
 
-	/* For bonded reconnects, pairing_complete is NOT called - only security_changed.
-	 * Enable TX when we have sufficient security (level 2+ = encrypted).
-	 * This handles both fresh pairing (pairing_complete also sets it) and
-	 * reconnects with existing bond.
+	/* Enable TX when we have sufficient security (level 2+ = encrypted).
+	 * This is the ONLY place that sets ble_tx_ready — security_changed is
+	 * the authority.  CCC subscription (secure_nus_ccc_changed) only kicks
+	 * the TX drain; it never sets ble_tx_ready.
 	 */
 	if (level >= BT_SECURITY_L2 && !ble_tx_ready) {
 		LOG_INF("security established, enabling TX");
 		ble_tx_ready = true;
 		active_iface = ZEPHCORE_IFACE_BLE;
 
-		/* Request our preferred connection parameters.
-		 * This is the single place for conn param requests -
-		 * fires for both fresh pairing and bonded reconnects. */
+		/* If CCC was already subscribed (bonded reconnect — phone writes
+		 * CCC before security_changed fires), kick TX now.  On fresh
+		 * pairing CCC hasn't been written yet, so this is a no-op and
+		 * TX starts when CCC fires later. */
+		if (nus_notif_enabled) {
+			kick_tx_drain();
+		}
+	}
+
+	if (level >= BT_SECURITY_L2) {
+		/* Request our preferred connection parameters. */
 		struct bt_le_conn_param conn_param = {
 			.interval_min = BLE_DEFAULT_MIN_INTERVAL,
 			.interval_max = BLE_DEFAULT_MAX_INTERVAL,
@@ -360,10 +374,6 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 				BLE_DEFAULT_MAX_INTERVAL * 5 / 4,
 				BLE_DEFAULT_LATENCY);
 		}
-
-		/* Don't kick TX here — MTU exchange may not be done yet.
-		 * TX starts when client subscribes to CCC (secure_nus_ccc_changed),
-		 * which is the last step and implies MTU is negotiated. */
 	}
 }
 
@@ -430,7 +440,7 @@ static struct bt_conn_auth_cb auth_cb = {
 static void pairing_complete(struct bt_conn *conn, bool bonded)
 {
 	ARG_UNUSED(conn);
-	LOG_DBG("bonded=%d", bonded);
+	LOG_INF("pairing complete: bonded=%d", bonded);
 
 	/* Switch to BLE interface (fresh pairing only).
 	 * Conn params and TX enable are handled in security_changed(),
@@ -572,9 +582,13 @@ static void secure_nus_ccc_changed(const struct bt_gatt_attr *attr, uint16_t val
 {
 	ARG_UNUSED(attr);
 	bool enabled = (value == BT_GATT_CCC_NOTIFY);
-	LOG_DBG("enabled=%d", enabled);
+	LOG_INF("CCCD notif %s (value=0x%04x)", enabled ? "enabled" : "disabled", value);
 	nus_notif_enabled = enabled;
 	if (enabled) {
+		/* Kick TX drain — if security_changed already set ble_tx_ready,
+		 * data starts flowing.  If security hasn't fired yet (bonded
+		 * reconnect race), kick_tx_drain bails harmlessly and
+		 * security_changed will kick again once ble_tx_ready is set. */
 		kick_tx_drain();
 	}
 }
@@ -594,7 +608,7 @@ static ssize_t secure_nus_rx_write(struct bt_conn *conn, const struct bt_gatt_at
 	const uint8_t *data = (const uint8_t *)buf;
 	uint8_t cmd = data[0];
 
-	LOG_DBG("len=%u cmd=0x%02x", len, cmd);
+	LOG_INF("NUS RX: len=%u cmd=0x%02x", len, cmd);
 
 	/* Notify main via callback */
 	if (ble_cbs && ble_cbs->on_rx_frame) {

@@ -21,6 +21,8 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/uart.h>
+#include <nrfx.h>
 
 LOG_MODULE_REGISTER(zephcore_gps, CONFIG_ZEPHCORE_GPS_LOG_LEVEL);
 
@@ -223,6 +225,20 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 			LOG_DBG("GPS: No fix, resetting counter");
 			consecutive_good_fixes = 0;
 		}
+
+		/* Periodic status at INF level so user knows NMEA is flowing.
+		 * Without this, GPS is completely silent until first fix (all
+		 * NMEA parsing is at DBG level in the driver). */
+		if (gps_current_state == GPS_STATE_ACQUIRING) {
+			static int64_t last_status_ms;
+			int64_t now = k_uptime_get();
+			if (now - last_status_ms >= 10000) {
+				LOG_INF("GPS: Searching... sats=%d fix=%d",
+					data->info.satellites_cnt,
+					data->info.fix_status);
+				last_status_ms = now;
+			}
+		}
 	}
 
 	k_mutex_unlock(&gps_mutex);
@@ -267,7 +283,20 @@ static void gnss_configure(void)
 	if (ret == 0) {
 		LOG_INF("GPS: Multi-constellation enabled");
 	} else if (ret == -ENOSYS || ret == -ENOTSUP) {
-		LOG_INF("GPS: Constellation config not supported by driver");
+		/* gnss-nmea-generic is a passive listener — no GNSS API.
+		 * Send PMTK353 directly via UART for constellation config.
+		 * uart_poll_out is safe: gnss-nmea-generic has no TX activity. */
+		const struct device *gnss_uart = DEVICE_DT_GET(DT_BUS(DT_NODELABEL(gnss)));
+		if (device_is_ready(gnss_uart)) {
+			/* GPS + GLONASS + Galileo + BeiDou (no QZSS) */
+			static const char pmtk[] = "$PMTK353,1,1,1,1,0*2B\r\n";
+			for (size_t i = 0; pmtk[i]; i++) {
+				uart_poll_out(gnss_uart, pmtk[i]);
+			}
+			LOG_INF("GPS: Sent PMTK353 (GPS+GLONASS+Galileo+BeiDou)");
+		} else {
+			LOG_INF("GPS: Constellation config not supported (UART not ready)");
+		}
 	} else {
 		LOG_WRN("GPS: Failed to set constellations: %d", ret);
 		/* Will retry on next power-on cycle */
@@ -329,6 +358,24 @@ static const struct gpio_dt_spec gps_sleep_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_
 #define HAS_GPS_SLEEP 0
 #endif
 
+/* GPS RTC interrupt pin — held LOW during normal operation */
+#if DT_NODE_EXISTS(DT_ALIAS(gps_rtc_int))
+static const struct gpio_dt_spec gps_rtcint_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_rtc_int), gpios);
+#define HAS_GPS_RTCINT 1
+#else
+#define HAS_GPS_RTCINT 0
+#endif
+
+/* GPS RESETB (active-LOW reset) — must be INPUT_PULLUP for normal operation.
+ * Without the pull-up, this pin floats LOW and holds the AG3335 in permanent
+ * reset, preventing any UART output. */
+#if DT_NODE_EXISTS(DT_ALIAS(gps_resetb))
+static const struct gpio_dt_spec gps_resetb_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_resetb), gpios);
+#define HAS_GPS_RESETB 1
+#else
+#define HAS_GPS_RESETB 0
+#endif
+
 /* T1000-E has extra GPS control pins that require a specific init sequence */
 #define HAS_T1000_GPS_CONTROL (HAS_GPS_VRTC || HAS_GPS_RESET || HAS_GPS_SLEEP)
 
@@ -348,8 +395,11 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 	/* Direct GPIO power control — works on all boards.
 	 * We toggle the GPS power pin ourselves rather than using driver PM
 	 * (driver PM can hang on modem_pipe_close / modem_chat_run_script).
-	 * The GNSS driver's modem pipe stays open; NMEA data simply stops
-	 * when power is cut and resumes when power is restored. */
+	 * The GNSS driver's modem pipe stays open.
+	 *
+	 * T1000-E (HAS_GPS_VRTC): Use warm standby (keep VRTC) for app toggle
+	 *   so UART/chip state is preserved. Matches Arduino sleep_gps().
+	 * Simple boards (Wio etc.): Full power off/on via GPS_EN. */
 	if (on) {
 #if HAS_T1000_GPS_CONTROL
 		/* T1000-E power-on sequence (from Arduino target.cpp start_gps())
@@ -384,6 +434,22 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 			gpio_pin_configure_dt(&gps_sleep_gpio, GPIO_OUTPUT_HIGH);
 		}
 #endif
+
+#if HAS_GPS_RTCINT
+		/* GPS_RTC_INT (P0.15) — held LOW during normal operation */
+		if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
+			gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_LOW);
+		}
+#endif
+
+#if HAS_GPS_RESETB
+		/* GPS_RESETB (P1.14) — active-LOW reset, must be pulled HIGH.
+		 * INPUT_PULLUP de-asserts reset so the AG3335 can boot.
+		 * Without this the pin floats LOW → chip stuck in reset → no UART. */
+		if (gpio_is_ready_dt(&gps_resetb_gpio)) {
+			gpio_pin_configure_dt(&gps_resetb_gpio, GPIO_INPUT | GPIO_PULL_UP);
+		}
+#endif
 		gps_gpio_configured = true;
 		LOG_INF("GPS power ON (T1000-E sequence)");
 #else
@@ -404,6 +470,15 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 #endif
 	} else {
 		/* Power off sequence */
+#if HAS_GPS_RESET
+		/* Hold GPS in reset during power-off — matches Arduino sleep_gps()/stop_gps().
+		 * Ensures chip sees RESET asserted when GPS_EN goes HIGH on next
+		 * power-on, preventing uncontrolled startup before the reset pulse. */
+		if (gpio_is_ready_dt(&gps_reset_gpio)) {
+			gpio_pin_set_dt(&gps_reset_gpio, 1);
+		}
+#endif
+
 #if HAS_GPS_VRTC
 		if (!keep_vrtc) {
 			/* Full power-off: VRTC off too (cold start on next wake) */
@@ -426,6 +501,21 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 				gpio_pin_set_dt(&gps_enable_gpio, 0);
 			}
 		}
+
+#if HAS_GPS_RESETB
+		/* Drive RESETB LOW when GPS is off (Arduino sleep_gps/stop_gps) */
+		if (gpio_is_ready_dt(&gps_resetb_gpio)) {
+			gpio_pin_configure_dt(&gps_resetb_gpio, GPIO_OUTPUT_LOW);
+		}
+#endif
+
+#if HAS_GPS_RTCINT
+		/* GPS_RTC_INT stays LOW during sleep/off (same as normal operation) */
+		if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
+			gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_LOW);
+		}
+#endif
+
 #if HAS_GPS_VRTC
 		LOG_INF("GPS power OFF (%s)", keep_vrtc ?
 			"standby — VRTC retained" : "full");
@@ -461,6 +551,16 @@ void gps_power_off_for_shutdown(void)
 #if HAS_GPS_SLEEP
 	if (gpio_is_ready_dt(&gps_sleep_gpio)) {
 		gpio_pin_configure_dt(&gps_sleep_gpio, GPIO_OUTPUT_LOW);
+	}
+#endif
+#if HAS_GPS_RTCINT
+	if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
+		gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_LOW);
+	}
+#endif
+#if HAS_GPS_RESETB
+	if (gpio_is_ready_dt(&gps_resetb_gpio)) {
+		gpio_pin_configure_dt(&gps_resetb_gpio, GPIO_OUTPUT_LOW);
 	}
 #endif
 }
@@ -564,6 +664,95 @@ static void gps_timeout_work_fn(struct k_work *work)
 	}
 }
 
+/* ========== GPS UART Diagnostics ========== */
+
+/**
+ * Dump nRF52840 UARTE0 hardware register state.
+ * Reads PSEL (pin select), ENABLE, BAUDRATE, and ERRORSRC directly
+ * from the peripheral registers — no assumptions, just facts.
+ */
+static void gps_uart_dump_hw_state(void)
+{
+#if defined(CONFIG_SOC_NRF52840)
+	NRF_UARTE_Type *uart = NRF_UARTE0;
+
+	uint32_t psel_txd = uart->PSEL.TXD;
+	uint32_t psel_rxd = uart->PSEL.RXD;
+	uint32_t enable   = uart->ENABLE;
+	uint32_t baudrate = uart->BAUDRATE;
+	uint32_t errorsrc = uart->ERRORSRC;
+
+	/* PSEL format: bit 31 = CONNECT (0=connected, 1=disconnected),
+	 * bits 4:0 = pin, bit 5 = port */
+	bool txd_connected = !(psel_txd & (1U << 31));
+	bool rxd_connected = !(psel_rxd & (1U << 31));
+	uint8_t txd_port = (psel_txd >> 5) & 1;
+	uint8_t txd_pin  = psel_txd & 0x1F;
+	uint8_t rxd_port = (psel_rxd >> 5) & 1;
+	uint8_t rxd_pin  = psel_rxd & 0x1F;
+
+	LOG_INF("UART0 HW state:");
+	LOG_INF("  ENABLE=0x%02x (8=enabled)", enable);
+	LOG_INF("  PSEL.TXD=0x%08x → P%d.%02d %s",
+		psel_txd, txd_port, txd_pin,
+		txd_connected ? "CONNECTED" : "DISCONNECTED");
+	LOG_INF("  PSEL.RXD=0x%08x → P%d.%02d %s",
+		psel_rxd, rxd_port, rxd_pin,
+		rxd_connected ? "CONNECTED" : "DISCONNECTED");
+	LOG_INF("  BAUDRATE=0x%08x ERRORSRC=0x%x", baudrate, errorsrc);
+
+	/* Clear any error flags */
+	if (errorsrc) {
+		uart->ERRORSRC = errorsrc;
+		LOG_WRN("  UART errors cleared: overrun=%d parity=%d framing=%d break=%d",
+			(errorsrc >> 0) & 1, (errorsrc >> 1) & 1,
+			(errorsrc >> 2) & 1, (errorsrc >> 3) & 1);
+	}
+#endif
+}
+
+#if HAS_GPS_POWER_CONTROL
+/**
+ * Log actual GPIO pin states after power-up sequence.
+ * Reads back each configured pin to verify the hardware accepted our config.
+ */
+static void gps_dump_gpio_states(void)
+{
+	LOG_INF("GPS GPIO states after power-up:");
+	if (gpio_is_ready_dt(&gps_enable_gpio)) {
+		LOG_INF("  GPS_EN (P1.11): %d", gpio_pin_get_dt(&gps_enable_gpio));
+	}
+#if HAS_GPS_VRTC
+	if (gpio_is_ready_dt(&gps_vrtc_gpio)) {
+		LOG_INF("  GPS_VRTC_EN (P0.08): %d", gpio_pin_get_dt(&gps_vrtc_gpio));
+	}
+#endif
+#if HAS_GPS_RESET
+	if (gpio_is_ready_dt(&gps_reset_gpio)) {
+		LOG_INF("  GPS_RESET (P1.15): %d", gpio_pin_get_dt(&gps_reset_gpio));
+	}
+#endif
+#if HAS_GPS_SLEEP
+	if (gpio_is_ready_dt(&gps_sleep_gpio)) {
+		LOG_INF("  GPS_SLEEP_INT (P1.12): %d", gpio_pin_get_dt(&gps_sleep_gpio));
+	}
+#endif
+#if HAS_GPS_RTCINT
+	if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
+		LOG_INF("  GPS_RTC_INT (P0.15): %d", gpio_pin_get_dt(&gps_rtcint_gpio));
+	}
+#endif
+#if HAS_GPS_RESETB
+	if (gpio_is_ready_dt(&gps_resetb_gpio)) {
+		LOG_INF("  GPS_RESETB (P1.14): %d (INPUT_PULLUP, expect 1)",
+			gpio_pin_get_dt(&gps_resetb_gpio));
+	}
+#endif
+}
+#endif /* HAS_GPS_POWER_CONTROL */
+
+/* ========== GNSS Init ========== */
+
 static int gnss_init(void)
 {
 	/* Try to find a GNSS device - prefer chip-specific drivers
@@ -590,8 +779,38 @@ static int gnss_init(void)
 	}
 
 	if (!device_is_ready(gnss_dev)) {
-		LOG_ERR("GNSS device %s not ready", gnss_dev->name);
-		return -ENODEV;
+		/* Device not ready — deferred init. Power up GPS then init driver.
+		 * IMPORTANT: Do NOT use uart_poll_in() here — it corrupts the
+		 * nRF52840 UARTE DMA state and breaks modem_pipe async receive.
+		 * Previous diagnostic proved GPS IS transmitting (415 bytes/2s). */
+		LOG_INF("GNSS device not ready — powering up for deferred init");
+		gps_power_control(true);
+
+#if HAS_GPS_POWER_CONTROL
+		/* Verify GPIO states immediately after power-up */
+		gps_dump_gpio_states();
+#endif
+
+		/* Dump UART0 hardware register state (read-only, non-destructive) */
+		gps_uart_dump_hw_state();
+
+		/* Wait for AG3335 firmware boot before driver init.
+		 * GPS transmits boot messages + NMEA at 115200 baud during this
+		 * delay — the Zephyr UART driver handles any accumulated errors
+		 * internally when modem_pipe_open() enables the ISR. */
+		k_msleep(500);
+
+		int ret = device_init(gnss_dev);
+		if (ret != 0 && ret != -EALREADY) {
+			LOG_ERR("GNSS device_init failed: %d", ret);
+			/* Dump UART state after failure for debugging */
+			gps_uart_dump_hw_state();
+			return -ENODEV;
+		}
+		if (!device_is_ready(gnss_dev)) {
+			LOG_ERR("GNSS device still not ready after deferred init");
+			return -ENODEV;
+		}
 	}
 
 	LOG_INF("GNSS device %s initialized", gnss_dev->name);
@@ -724,8 +943,14 @@ void gps_enable(bool enable)
 		k_work_cancel_delayable(&gps_wake_work);
 		k_work_cancel_delayable(&gps_timeout_work);
 
-		/* Power off GPS */
-		gps_power_control(false);
+		/* Power off GPS — warm standby if VRTC available (Arduino sleep_gps),
+		 * full power off otherwise. Warm standby preserves ephemeris/RTC
+		 * in AG3335 backup RAM for fast re-acquisition (1-8s vs 15-45s). */
+#if HAS_GPS_VRTC
+		gps_power_control(false, true);  /* Warm standby — keep VRTC */
+#else
+		gps_power_control(false);        /* No VRTC — full power off */
+#endif
 		gps_current_state = GPS_STATE_OFF;
 		consecutive_good_fixes = 0;
 

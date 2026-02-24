@@ -294,12 +294,15 @@ static void lr11xx_start_rx(struct lr11xx_data *data,
 {
 	void *ctx = &data->hal_ctx;
 
+	LOG_INF("start_rx: t=%lld duty=%d", k_uptime_get(),
+		data->rx_duty_cycle_enabled);
+
 	/* Standby first — wake from any sleep state */
 	data->hal_ctx.radio_is_sleeping = true;
 	lr11xx_status_t rc = lr11xx_system_set_standby(ctx,
 						       LR11XX_SYSTEM_STANDBY_CFG_RC);
 	if (rc != LR11XX_STATUS_OK) {
-		LOG_ERR("standby failed — triggering HW reset");
+		LOG_ERR("standby failed (rc=%d) — triggering HW reset", rc);
 		lr11xx_hardware_reset(data, cfg);
 	}
 
@@ -340,7 +343,8 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 	lr11xx_system_irq_mask_t irq;
 	lr11xx_system_get_and_clear_irq_status(ctx, &irq);
 
-	LOG_DBG("DIO1 IRQ: 0x%08x tx=%d", irq, data->tx_active);
+	LOG_INF("DIO1 IRQ: 0x%08x tx=%d t=%lld", irq, data->tx_active,
+		k_uptime_get());
 
 	/* ── RX done ── */
 	if (irq & LR11XX_SYSTEM_IRQ_RX_DONE) {
@@ -392,7 +396,8 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 
 	/* ── Timeout ── */
 	if (irq & LR11XX_SYSTEM_IRQ_TIMEOUT) {
-		LOG_DBG("Timeout IRQ");
+		LOG_INF("Timeout IRQ — restarting RX (duty_cycle=%d)",
+			data->rx_duty_cycle_enabled);
 		if (!data->tx_active) {
 			lr11xx_start_rx(data, cfg);
 		}
@@ -664,21 +669,19 @@ bool lr11xx_is_receiving(const struct device *dev)
 void lr11xx_set_rx_duty_cycle(const struct device *dev, bool enable)
 {
 	struct lr11xx_data *data = dev->data;
+	const struct lr11xx_config *cfg = dev->config;
 
 	data->rx_duty_cycle_enabled = enable;
 	LOG_INF("RX duty cycle %s", enable ? "enabled" : "disabled");
 
+	/* If currently in RX, restart with proper Standby transition.
+	 * LR1110 requires Standby before SetRx or SetRxDutyCycle —
+	 * issuing these while already in RX puts the radio in an
+	 * undefined state where RSSI reads work but packet detection
+	 * is broken (zero DIO1 IRQs). */
 	if (data->in_rx_mode) {
 		k_mutex_lock(&data->spi_mutex, K_FOREVER);
-		if (enable) {
-			lr11xx_apply_rx_duty_cycle(data);
-		} else {
-			lr11xx_radio_set_rx(&data->hal_ctx, 0xFFFFFF);
-			if (data->rx_boost_enabled) {
-				lr11xx_radio_cfg_rx_boosted(&data->hal_ctx,
-							   true);
-			}
-		}
+		lr11xx_start_rx(data, cfg);
 		k_mutex_unlock(&data->spi_mutex);
 	}
 }

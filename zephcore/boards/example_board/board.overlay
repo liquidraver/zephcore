@@ -679,6 +679,14 @@
  *
  * Supported: "luatos,air530z", "quectel,lc76g", "gnss-nmea-generic"
  *
+ * Two patterns depending on who controls GPS power:
+ *
+ * PATTERN A: Driver-managed power (simple, GPS at 9600 baud)
+ *   Driver uses on-off-gpios to control power internally.
+ *   UART ISR backend works fine (driver enables power after ISR is ready).
+ *   No deferred-init needed, no CONFIG_UART_ASYNC_API needed.
+ *   Example: Wio Tracker L1 (L76K via air530z driver)
+ *
  * &uart0 {
  *     current-speed = <9600>;
  *     gnss: gnss {
@@ -686,6 +694,64 @@
  *         on-off-gpios = <&gpio1 9 GPIO_ACTIVE_HIGH>;
  *     };
  * };
+ *
+ *
+ * PATTERN B: External GPIO power with deferred init (GPS at 115200 baud)
+ *   GPS power is managed by ZephyrGPSManager via multiple GPIOs.
+ *   Must use zephyr,deferred-init so driver init waits for GPS power-up.
+ *   Must use CONFIG_UART_ASYNC_API=y in board.conf (see notes there).
+ *   Example: T1000-E (AG3335 via lc76g driver, PAIR protocol)
+ *
+ *   WHY DEFERRED INIT: The GNSS driver's init() immediately opens the
+ *   modem pipe and sends commands. Without deferred-init, the driver
+ *   tries to talk to the GPS before it's powered → guaranteed timeout.
+ *   With deferred-init, ZephyrGPSManager powers up GPIO first, then
+ *   calls device_init() to start the driver conversation.
+ *
+ * &uart0 {
+ *     compatible = "nordic,nrf-uarte";
+ *     status = "okay";
+ *     current-speed = <115200>;
+ *     pinctrl-0 = <&uart0_default>;
+ *     pinctrl-1 = <&uart0_sleep>;
+ *     pinctrl-names = "default", "sleep";
+ *
+ *     gnss: gnss {
+ *         compatible = "quectel,lc76g";
+ *         pps-mode = "GNSS_PPS_MODE_DISABLED";
+ *         zephyr,deferred-init;
+ *     };
+ * };
+ *
+ *
+ * GPS POWER GPIO ALIASES (add to aliases block above):
+ *   For Pattern A: only gps-enable is needed (shared with on-off-gpios)
+ *   For Pattern B: define all GPIOs your GPS module requires
+ *
+ * aliases {
+ *     gps-enable    = &gps_en_pin;       Required: GPS main power
+ *     gps-vrtc-enable = &gps_vrtc_pin;   Optional: VRTC backup power (warm standby)
+ *     gps-reset     = &gps_reset_pin;     Optional: GPS hardware reset
+ *     gps-sleep-int = &gps_sleep_pin;     Optional: GPS sleep/wake interrupt
+ *     gps-rtc-int   = &gps_rtcint_pin;    Optional: GPS RTC interrupt (held LOW)
+ *     gps-resetb    = &gps_resetb_pin;    Optional: Active-LOW reset (INPUT_PULLUP!)
+ * };
+ *
+ * GPS GPIO nodes (add to root / { } block):
+ *
+ * gps_power: gps-power {
+ *     compatible = "gpio-leds";
+ *     gps_en_pin: gps_en {
+ *         gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+ *         label = "GPS Enable";
+ *     };
+ * };
+ *
+ * IMPORTANT for AG3335-based boards (T1000-E, etc.):
+ *   gps-resetb (active-LOW reset) MUST be configured as INPUT_PULLUP.
+ *   Without pull-up, the pin floats LOW → AG3335 stays in permanent
+ *   reset → zero UART output. ZephyrGPSManager handles this for
+ *   power-on (INPUT_PULLUP) and power-off (OUTPUT_LOW).
  */
 
 /* --- OLED Display on I2C (any platform with I2C) ---

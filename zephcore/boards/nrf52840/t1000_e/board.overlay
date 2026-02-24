@@ -46,10 +46,33 @@
 		};
 	};
 
+	/* GPS RTC interrupt - P0.15 (held LOW during normal operation) */
+	gps_rtcint: gps-rtc-int {
+		compatible = "gpio-leds";
+		gps_rtcint_pin: gps_rtc_int {
+			gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+			label = "GPS RTC Int";
+		};
+	};
+
+	/* GPS RESETB (active-LOW reset) - P1.14
+	 * Must be pulled HIGH (INPUT_PULLUP) for normal operation.
+	 * Without pull-up, this pin floats LOW and holds the AG3335
+	 * in permanent reset — zero UART output! */
+	gps_resetb: gps-resetb {
+		compatible = "gpio-leds";
+		gps_resetb_pin: gps_resetb {
+			gpios = <&gpio1 14 GPIO_ACTIVE_HIGH>;
+			label = "GPS RESETB";
+		};
+	};
+
 	aliases {
 		gps-enable = &gps_enable_pin;
 		gps-vrtc-enable = &gps_vrtc_pin;
 		gps-reset = &gps_reset_pin;
 		gps-sleep-int = &gps_sleep_pin;
+		gps-rtc-int = &gps_rtcint_pin;
+		gps-resetb = &gps_resetb_pin;
 	};
 };
