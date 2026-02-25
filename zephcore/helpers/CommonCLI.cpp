@@ -615,17 +615,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             snprintf(reply, CLI_REPLY_SIZE, "OK - rxboost=%d (reboot to apply)", _prefs->rx_boost);
         } else if (memcmp(config, "rxboost", 7) == 0 && (config[7] == 0 || config[7] == ' ')) {
             snprintf(reply, CLI_REPLY_SIZE, "> %d", _prefs->rx_boost);
-        } else if (memcmp(config, "rxduty ", 7) == 0) {
-            if (memcmp(&config[7], "on", 2) == 0) {
-                _prefs->rx_duty_cycle = 1;
-            } else {
-                _prefs->rx_duty_cycle = 0;
-            }
-            savePrefs();
-            snprintf(reply, CLI_REPLY_SIZE, "OK - rxduty=%s (reboot to apply)",
-                     _prefs->rx_duty_cycle ? "on" : "off");
-        } else if (memcmp(config, "rxduty", 6) == 0 && (config[6] == 0 || config[6] == ' ')) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->rx_duty_cycle ? "on" : "off");
+        } else if (memcmp(config, "rxduty", 6) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "RX duty cycle disabled (continuous RX)");
         } else {
             snprintf(reply, CLI_REPLY_SIZE, "unknown config: %s", config);
         }

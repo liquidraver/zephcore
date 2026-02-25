@@ -51,9 +51,8 @@ void LR1110Radio::hwStartReceive()
 	}
 	_in_recv_mode = true;
 
-	if (_rx_boost_enabled) {
-		lr11xx_set_rx_boost(_dev, true);
-	}
+	/* RX boost: set once via setRxBoost(), LR1110 SetRxBoosted
+	 * command persists through SetRx calls. */
 	if (_rx_duty_cycle_enabled) {
 		lr11xx_set_rx_duty_cycle(_dev, true);
 	}

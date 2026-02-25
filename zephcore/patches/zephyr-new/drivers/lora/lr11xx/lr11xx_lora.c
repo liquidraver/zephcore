@@ -370,7 +370,8 @@ static void lr11xx_start_rx(struct lr11xx_data *data,
 		lr11xx_radio_set_rx(ctx, 0xFFFFFF);
 	}
 
-	/* RX boost */
+	/* SetRxBoosted (0x0227) is a persistent config — apply once on
+	 * full start, survives subsequent SetRx calls. */
 	if (data->rx_boost_enabled) {
 		lr11xx_radio_cfg_rx_boosted(ctx, true);
 	}
@@ -415,10 +416,7 @@ static void lr11xx_restart_rx(struct lr11xx_data *data)
 		lr11xx_radio_set_rx(ctx, 0xFFFFFF);
 	}
 
-	if (data->rx_boost_enabled) {
-		lr11xx_radio_cfg_rx_boosted(ctx, true);
-	}
-
+	/* RX boost persists through SetRx — no re-apply needed. */
 	data->in_rx_mode = true;
 }
 

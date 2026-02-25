@@ -1,5 +1,5 @@
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index 8e0ca45c271..1816ff8f924 100644
+index 8e0ca45c271..6b0ee88ff0c 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -9,10 +9,19 @@
@@ -49,7 +49,35 @@ index 8e0ca45c271..1816ff8f924 100644
  
  	return sx126x_hal_write_cmd(dev, SX126X_CMD_CALIBRATE_IMAGE, buf, 2);
  }
-@@ -267,6 +264,7 @@ static int sx126x_set_packet_params(const struct device *dev,
+@@ -219,6 +216,14 @@ static int sx126x_configure_pa_and_tx_params(const struct device *dev,
+ 	int8_t tx_power;
+ 	int ret;
+ 
++	/* Save OCP register — SetPaConfig resets it to a chip default. */
++	uint8_t ocp;
++
++	ret = sx126x_hal_read_regs(dev, SX126X_REG_OCP_CONFIG, &ocp, 1);
++	if (ret < 0) {
++		return ret;
++	}
++
+ 	if (config->is_sx1261) {
+ 		/*
+ 		 * SX1261: Low power PA, up to +15 dBm
+@@ -247,6 +252,12 @@ static int sx126x_configure_pa_and_tx_params(const struct device *dev,
+ 		tx_power = CLAMP(power, SX1262_MIN_POWER, SX1262_MAX_POWER);
+ 	}
+ 
++	/* Restore OCP register after SetPaConfig. */
++	ret = sx126x_hal_write_regs(dev, SX126X_REG_OCP_CONFIG, &ocp, 1);
++	if (ret < 0) {
++		return ret;
++	}
++
+ 	uint8_t buf[2] = { (uint8_t)tx_power, ramp_time };
+ 
+ 	return sx126x_hal_write_cmd(dev, SX126X_CMD_SET_TX_PARAMS, buf, 2);
+@@ -267,6 +278,7 @@ static int sx126x_set_packet_params(const struct device *dev,
  				    uint8_t invert_iq)
  {
  	uint8_t buf[6];
@@ -57,7 +85,7 @@ index 8e0ca45c271..1816ff8f924 100644
  
  	sys_put_be16(preamble_len, &buf[0]);
  	buf[2] = header_type;
-@@ -274,7 +272,28 @@ static int sx126x_set_packet_params(const struct device *dev,
+@@ -274,7 +286,31 @@ static int sx126x_set_packet_params(const struct device *dev,
  	buf[4] = crc_mode;
  	buf[5] = invert_iq;
  
@@ -71,7 +99,10 @@ index 8e0ca45c271..1816ff8f924 100644
 +	 * After SetPacketParams, register 0x0736 bit 2 must be:
 +	 *   SET   for standard IQ (non-inverted)
 +	 *   CLEAR for inverted IQ
-+	 * Without this fix, inverted-IQ packets are not received. */
++	 * Without this fix, inverted-IQ packets are not received.
++	 *
++	 * Must read-modify-write — SetPacketParams actively writes to
++	 * this register and other bits may vary.  Cannot cache. */
 +	uint8_t iq_val;
 +
 +	ret = sx126x_hal_read_regs(dev, SX126X_REG_IQ_POLARITY, &iq_val, 1);
@@ -87,7 +118,33 @@ index 8e0ca45c271..1816ff8f924 100644
  }
  
  static int sx126x_set_sync_word(const struct device *dev, bool public_network)
-@@ -307,6 +326,7 @@ static int sx126x_set_tx(const struct device *dev, uint32_t timeout_ms)
+@@ -291,8 +327,24 @@ static int sx126x_set_sync_word(const struct device *dev, bool public_network)
+ static int sx126x_set_rx_gain(const struct device *dev, bool boosted)
+ {
+ 	uint8_t val = boosted ? SX126X_RX_GAIN_BOOSTED : SX126X_RX_GAIN_POWER_SAVING;
++	int ret;
++
++	ret = sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &val, 1);
++	if (ret < 0) {
++		return ret;
++	}
+ 
+-	return sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &val, 1);
++	/* Add RX gain register to retention list (DS §9.6) so the chip
++	 * preserves the setting across mode transitions.  Without this,
++	 * register 0x08AC resets to power-saving on every SetRx. */
++	const uint8_t retention[] = {
++		0x01,
++		(uint8_t)(SX126X_REG_RX_GAIN >> 8),
++		(uint8_t)(SX126X_REG_RX_GAIN & 0xFF),
++	};
++
++	return sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN_RETENTION_0,
++				     retention, sizeof(retention));
+ }
+ 
+ static int sx126x_set_tx(const struct device *dev, uint32_t timeout_ms)
+@@ -307,6 +359,7 @@ static int sx126x_set_tx(const struct device *dev, uint32_t timeout_ms)
  static int sx126x_set_rx(const struct device *dev, uint32_t timeout_ms)
  {
  	uint32_t timeout;
@@ -95,7 +152,7 @@ index 8e0ca45c271..1816ff8f924 100644
  
  	if (timeout_ms == 0) {
  		timeout = SX126X_RX_TIMEOUT_CONTINUOUS;
-@@ -317,7 +337,23 @@ static int sx126x_set_rx(const struct device *dev, uint32_t timeout_ms)
+@@ -317,7 +370,23 @@ static int sx126x_set_rx(const struct device *dev, uint32_t timeout_ms)
  	uint8_t buf[3];
  
  	sys_put_be24(timeout, buf);
@@ -120,7 +177,7 @@ index 8e0ca45c271..1816ff8f924 100644
  }
  
  static int sx126x_get_rx_buffer_status(const struct device *dev,
-@@ -341,12 +377,18 @@ static int sx126x_get_packet_status(const struct device *dev,
+@@ -341,12 +410,18 @@ static int sx126x_get_packet_status(const struct device *dev,
  	uint8_t buf[3];
  	int ret;
  
@@ -141,7 +198,7 @@ index 8e0ca45c271..1816ff8f924 100644
  	}
  
  	return ret;
-@@ -419,6 +461,21 @@ static int sx126x_chip_init(const struct device *dev)
+@@ -419,6 +494,21 @@ static int sx126x_chip_init(const struct device *dev)
  		return ret;
  	}
  
@@ -163,7 +220,7 @@ index 8e0ca45c271..1816ff8f924 100644
  	/* Configure IRQs on DIO1: TX done, RX done, timeout */
  	uint16_t irq_mask = SX126X_IRQ_TX_DONE | SX126X_IRQ_RX_DONE |
  			    SX126X_IRQ_RX_TX_TIMEOUT | SX126X_IRQ_CRC_ERR;
-@@ -443,7 +500,7 @@ static void sx126x_dio1_callback(const struct device *dev)
+@@ -443,7 +533,7 @@ static void sx126x_dio1_callback(const struct device *dev)
  {
  	struct sx126x_data *data = dev->data;
  
@@ -172,7 +229,7 @@ index 8e0ca45c271..1816ff8f924 100644
  }
  
  static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
-@@ -451,11 +508,108 @@ static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
+@@ -451,11 +541,107 @@ static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
  	const struct sx126x_hal_config *config = dev->config;
  
  	sx126x_hal_set_antenna_enable(dev, enable);
@@ -274,15 +331,14 @@ index 8e0ca45c271..1816ff8f924 100644
 +		sx126x_hal_write_cmd(dev, SX126X_CMD_SET_RX, buf, 3);
 +	}
 +
-+	if (data->rx_boost_enabled) {
-+		sx126x_set_rx_gain(dev, true);
-+	}
++	/* RX gain is preserved by hardware retention registers (§9.6) —
++	 * no need to re-apply on every restart. */
 +}
 +
  static void sx126x_handle_irq_tx_done(const struct device *dev)
  {
  	struct sx126x_data *data = dev->data;
-@@ -510,12 +664,23 @@ static void sx126x_handle_irq_rx_done(const struct device *dev, uint16_t irq_sta
+@@ -510,12 +696,23 @@ static void sx126x_handle_irq_rx_done(const struct device *dev, uint16_t irq_sta
  
  	/* Handle async callback or signal sync receiver */
  	if (data->rx_cb != NULL) {
@@ -312,7 +368,7 @@ index 8e0ca45c271..1816ff8f924 100644
  	} else {
  		/* Sync mode */
  		atomic_set(&data->state, SX126X_STATE_IDLE);
-@@ -621,6 +786,29 @@ static int sx126x_lora_config(const struct device *dev,
+@@ -621,6 +818,29 @@ static int sx126x_lora_config(const struct device *dev,
  		goto out;
  	}
  
@@ -342,7 +398,7 @@ index 8e0ca45c271..1816ff8f924 100644
  	/* Set sync word */
  	ret = sx126x_set_sync_word(dev, config->public_network);
  	if (ret < 0) {
-@@ -691,6 +879,29 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -691,6 +911,29 @@ static int sx126x_lora_send_async(const struct device *dev,
  	/* Enable antenna and set TX path */
  	sx126x_set_rf_path(dev, true, true);
  
@@ -372,7 +428,7 @@ index 8e0ca45c271..1816ff8f924 100644
  	/* Start transmission with 10 second timeout */
  	ret = sx126x_set_tx(dev, 10000);
  	if (ret < 0) {
-@@ -974,6 +1185,77 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+@@ -974,6 +1217,75 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  	return 0;
  }
  
@@ -429,9 +485,7 @@ index 8e0ca45c271..1816ff8f924 100644
 +		} else {
 +			sx126x_set_rx(dev, 0);
 +		}
-+		if (data->rx_boost_enabled) {
-+			sx126x_set_rx_gain(dev, true);
-+		}
++		/* RX gain preserved by hardware retention (§9.6) */
 +		k_mutex_unlock(&data->lock);
 +	}
 +}
@@ -450,7 +504,7 @@ index 8e0ca45c271..1816ff8f924 100644
  static const struct lora_driver_api sx126x_lora_api = {
  	.config = sx126x_lora_config,
  	.send = sx126x_lora_send,
-@@ -999,6 +1281,14 @@ static int sx126x_init(const struct device *dev)
+@@ -999,6 +1311,14 @@ static int sx126x_init(const struct device *dev)
  	data->dev = dev;
  	atomic_set(&data->state, SX126X_STATE_IDLE);
  	data->config_valid = false;
@@ -504,3 +558,27 @@ index bdf962e3343..de60d18b694 100644
  		      k_msleep(1))) {
  		LOG_WRN("Busy timeout after %u ms", timeout_ms);
  		return -ETIMEDOUT;
+diff --git a/drivers/lora/native/sx126x/sx126x_regs.h b/drivers/lora/native/sx126x/sx126x_regs.h
+index 9942838494a..e6cb127d8a3 100644
+--- a/drivers/lora/native/sx126x/sx126x_regs.h
++++ b/drivers/lora/native/sx126x/sx126x_regs.h
+@@ -180,9 +180,19 @@
+ #define SX126X_RX_GAIN_POWER_SAVING         0x94
+ #define SX126X_RX_GAIN_BOOSTED              0x96
+ 
++/* RX Gain Retention (DS §9.6) — tells chip to preserve 0x08AC across
++ * mode transitions (sleep/standby/TX → RX).  Without retention, the
++ * chip resets RX gain to power-saving on every SetRx command. */
++#define SX126X_REG_RX_GAIN_RETENTION_0      0x029F
++
+ /* TX Clamp Config (workaround for SX1262) */
+ #define SX126X_REG_TX_CLAMP_CFG             0x08D8
+ 
++/* OCP (Over-Current Protection) configuration.
++ * SetPaConfig resets this to a chip default — save/restore around
++ * PA configuration to preserve any custom OCP setting. */
++#define SX126X_REG_OCP_CONFIG               0x08E7
++
+ /* IQ Polarity (workaround) */
+ #define SX126X_REG_IQ_POLARITY              0x0736
+ 

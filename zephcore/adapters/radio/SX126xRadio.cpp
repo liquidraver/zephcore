@@ -51,9 +51,8 @@ void SX126xRadio::hwStartReceive()
 	}
 	_in_recv_mode = true;
 
-	if (_rx_boost_enabled) {
-		sx126x_set_rx_boost(_dev, true);
-	}
+	/* RX boost: set once via setRxBoost(), preserved by SX126x
+	 * hardware retention registers (DS §9.6). */
 	if (_rx_duty_cycle_enabled) {
 		sx126x_set_rx_duty_cycle(_dev, true);
 	}
