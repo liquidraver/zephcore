@@ -110,6 +110,12 @@ static int64_t ble_tx_start_time = 0;
 /* Active interface tracking */
 static enum zephcore_iface active_iface = ZEPHCORE_IFACE_NONE;
 
+/* DLE tracking — set after successful DLE request to avoid double-request */
+static bool dle_requested;
+
+/* PHY override — request Coded|1M once if phone chose 2M */
+static bool phy_override_sent;
+
 /* Advertising state */
 static bool adv_switching = false;
 static bool adv_is_slow = false;
@@ -125,6 +131,9 @@ static const struct bt_gatt_attr *nus_tx_attr;
 static void ble_tx_complete_cb(struct bt_conn *conn, void *user_data);
 static int secure_nus_send(struct bt_conn *conn, const void *data, uint16_t len);
 static void secure_nus_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+static void request_dle(struct bt_conn *conn);
+#endif
 static ssize_t secure_nus_rx_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 				   const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
 static void start_adv(void);
@@ -262,23 +271,12 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	k_work_cancel_delayable(&adv_slow_work);
 	adv_is_slow = false;
 
-	/* Request max data length (251 bytes) - must be before MTU exchange per BLE spec.
-	 * Apple Accessory Design Guidelines: DLE before MTU handshake for best performance.
-	 */
-#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
-	{
-		struct bt_conn_le_data_len_param data_len_param = {
-			.tx_max_len = BT_GAP_DATA_LEN_MAX,
-			.tx_max_time = BT_GAP_DATA_TIME_MAX,
-		};
-		int dle_err = bt_conn_le_data_len_update(conn, &data_len_param);
-		if (dle_err) {
-			LOG_WRN("Failed to request data length update: %d", dle_err);
-		} else {
-			LOG_INF("Requested max data length (251 bytes)");
-		}
-	}
-#endif
+	/* DLE is NOT requested here — the phone may start a PHY update LL
+	 * procedure immediately, and BLE allows only one at a time.
+	 * DLE is deferred to le_phy_updated() (after PHY negotiation completes)
+	 * with a fallback in security_changed() if PHY update never fires. */
+	dle_requested = false;
+	phy_override_sent = false;
 
 	/* Do NOT proactively request security here.
 	 *
@@ -388,6 +386,11 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 	}
 
 	if (level >= BT_SECURITY_L2) {
+#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+		/* Fallback DLE request — if le_phy_updated() already sent it,
+		 * request_dle() returns immediately (dle_requested flag). */
+		request_dle(conn);
+#endif
 		/* Request our preferred connection parameters. */
 		struct bt_le_conn_param conn_param = {
 			.interval_min = BLE_DEFAULT_MIN_INTERVAL,
@@ -432,12 +435,76 @@ static void le_param_updated(struct bt_conn *conn, uint16_t interval,
 }
 
 #if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+/* Request max DLE (251 bytes).  Called from le_phy_updated() after PHY
+ * negotiation completes, and from security_changed() as a fallback if
+ * PHY update never fires.  The dle_requested flag prevents double-request. */
+static void request_dle(struct bt_conn *conn)
+{
+	if (dle_requested) {
+		return;
+	}
+	struct bt_conn_le_data_len_param data_len_param = {
+		.tx_max_len = BT_GAP_DATA_LEN_MAX,
+		.tx_max_time = BT_GAP_DATA_TIME_MAX,
+	};
+	int err = bt_conn_le_data_len_update(conn, &data_len_param);
+	if (err) {
+		LOG_WRN("Failed to request data length update: %d", err);
+	} else {
+		LOG_INF("Requested max data length (251 bytes)");
+		dle_requested = true;
+	}
+}
+
 static void le_data_len_updated(struct bt_conn *conn, struct bt_conn_le_data_len_info *info)
 {
 	ARG_UNUSED(conn);
 	LOG_INF("BLE data length updated: TX=%u/%uus RX=%u/%uus",
 		info->tx_max_len, info->tx_max_time,
 		info->rx_max_len, info->rx_max_time);
+}
+#endif
+
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+static const char *phy_name(uint8_t phy)
+{
+	switch (phy) {
+	case BT_GAP_LE_PHY_1M:    return "1M";
+	case BT_GAP_LE_PHY_2M:    return "2M";
+	case BT_GAP_LE_PHY_CODED: return "Coded";
+	default:                   return "Unknown";
+	}
+}
+
+static void le_phy_updated(struct bt_conn *conn, struct bt_conn_le_phy_info *param)
+{
+	LOG_INF("BLE PHY updated: TX=%s RX=%s", phy_name(param->tx_phy),
+		phy_name(param->rx_phy));
+
+	/* If the phone chose 2M, override with Coded|1M preference.
+	 * Coded gives ~4× BLE range (S=8); if the phone doesn't support it,
+	 * the intersection is 1M (better range than 2M for a mesh device).
+	 * Only try once to avoid ping-pong if the phone insists on 2M. */
+	if (param->tx_phy == BT_GAP_LE_PHY_2M && !phy_override_sent) {
+		const struct bt_conn_le_phy_param phy_pref = {
+			.options = BT_CONN_LE_PHY_OPT_NONE,
+			.pref_tx_phy = BT_GAP_LE_PHY_CODED | BT_GAP_LE_PHY_1M,
+			.pref_rx_phy = BT_GAP_LE_PHY_CODED | BT_GAP_LE_PHY_1M,
+		};
+		phy_override_sent = true;
+		int err = bt_conn_le_phy_update(conn, &phy_pref);
+		if (err) {
+			LOG_WRN("PHY override failed: %d, requesting DLE", err);
+		} else {
+			LOG_INF("Requested Coded|1M PHY (overriding 2M)");
+			return;  /* DLE when this callback fires again */
+		}
+	}
+
+	/* PHY is settled — request DLE.  Deferred here from connected()
+	 * because the phone starts a PHY procedure on connect and BLE
+	 * only allows one LL procedure at a time. */
+	request_dle(conn);
 }
 #endif
 
@@ -448,6 +515,9 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.le_param_req = le_param_req,
 	.le_param_updated = le_param_updated,
 	.security_changed = security_changed,
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	.le_phy_updated = le_phy_updated,
+#endif
 #if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
 	.le_data_len_updated = le_data_len_updated,
 #endif

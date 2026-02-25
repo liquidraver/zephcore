@@ -82,7 +82,35 @@ void ZephyrDataStore::begin()
 		migrateToExternalFS();
 	}
 
+	/* Clean up stale .tmp files from interrupted saves.
+	 * If a .tmp file exists, the save was interrupted before the
+	 * atomic rename — the original file is still intact. */
+	cleanStaleTmpFiles();
+
 	checkAdvBlobFile();
+}
+
+void ZephyrDataStore::cleanStaleTmpFiles()
+{
+	/* If a .tmp file exists, a save was interrupted before the atomic
+	 * rename completed.  Since we never unlink the original before
+	 * rename, the original file is guaranteed intact.  The .tmp may
+	 * be partial (crash during write) or complete (crash between
+	 * close and rename).  Either way, delete it — we keep the last
+	 * successfully-committed version.  Worst case: we lose the one
+	 * save that was in progress, but never lose ALL data. */
+	const char *paths[] = { contactsFile(), channelsFile(), advBlobsFile() };
+	char tmp_path[48];
+	for (size_t i = 0; i < ARRAY_SIZE(paths); i++) {
+		snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", paths[i]);
+		struct fs_dirent ent;
+		if (fs_stat(tmp_path, &ent) == 0) {
+			LOG_INF("PREVIOUS REBOOT CORRUPTED FS! "
+				"Deleting temp file: %s (%zu bytes)",
+				tmp_path, ent.size);
+			fs_unlink(tmp_path);
+		}
+	}
 }
 
 bool ZephyrDataStore::exists(const char *path)
@@ -505,14 +533,21 @@ void ZephyrDataStore::saveContacts(DataStoreHost *host)
 {
 	const char *path = contactsFile();
 	LOG_INF("saveContacts: path=%s (_has_ext_fs=%d)", path, _has_ext_fs ? 1 : 0);
+
+	/* Crash-safe write: write to .tmp, sync, then atomic rename.
+	 * If power is lost before rename completes, the original file
+	 * is still intact.  Stale .tmp files are cleaned at boot. */
+	char tmp_path[48];
+	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+
 	struct fs_file_t file;
 	fs_file_t_init(&file);
-	if (exists(path)) {
-		fs_unlink(path);
+	if (exists(tmp_path)) {
+		fs_unlink(tmp_path);
 	}
-	int rc = fs_open(&file, path, FS_O_CREATE | FS_O_WRITE);
+	int rc = fs_open(&file, tmp_path, FS_O_CREATE | FS_O_WRITE);
 	if (rc < 0) {
-		LOG_ERR("saveContacts: fs_open(%s) failed: %d", path, rc);
+		LOG_ERR("saveContacts: fs_open(%s) failed: %d", tmp_path, rc);
 		return;
 	}
 	uint32_t idx = 0;
@@ -535,7 +570,22 @@ void ZephyrDataStore::saveContacts(DataStoreHost *host)
 	}
 	int sync_rc = fs_sync(&file);
 	fs_close(&file);
-	LOG_INF("saveContacts: saved %u contacts to %s (sync=%d)", idx, path, sync_rc);
+
+	if (sync_rc < 0) {
+		LOG_ERR("saveContacts: sync failed (%d), keeping old file", sync_rc);
+		fs_unlink(tmp_path);
+		return;
+	}
+
+	/* Atomic replace — LittleFS 2 rename() replaces the destination
+	 * in a single CRC-protected metadata commit.  No unlink needed.
+	 * Power loss at any point: either old file or new file, never empty. */
+	rc = fs_rename(tmp_path, path);
+	if (rc < 0) {
+		LOG_ERR("saveContacts: rename %s → %s failed: %d", tmp_path, path, rc);
+	} else {
+		LOG_INF("saveContacts: saved %u contacts to %s", idx, path);
+	}
 }
 
 void ZephyrDataStore::loadChannels(DataStoreHost *host)
@@ -568,13 +618,18 @@ void ZephyrDataStore::loadChannels(DataStoreHost *host)
 void ZephyrDataStore::saveChannels(DataStoreHost *host)
 {
 	const char *path = channelsFile();
+
+	/* Crash-safe write: write to .tmp, sync, then atomic rename. */
+	char tmp_path[48];
+	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+
 	struct fs_file_t file;
 	fs_file_t_init(&file);
-	if (exists(path)) {
-		fs_unlink(path);
+	if (exists(tmp_path)) {
+		fs_unlink(tmp_path);
 	}
-	if (fs_open(&file, path, FS_O_CREATE | FS_O_WRITE) < 0) {
-		LOG_ERR("Failed to open %s for write", path);
+	if (fs_open(&file, tmp_path, FS_O_CREATE | FS_O_WRITE) < 0) {
+		LOG_ERR("saveChannels: fs_open(%s) failed", tmp_path);
 		return;
 	}
 	uint8_t channel_idx = 0;
@@ -586,8 +641,23 @@ void ZephyrDataStore::saveChannels(DataStoreHost *host)
 		if (fs_write(&file, (uint8_t *)ch.channel.secret, 32) != 32) break;
 		channel_idx++;
 	}
+	int sync_rc = fs_sync(&file);
 	fs_close(&file);
-	LOG_DBG("Saved %u channels to %s", channel_idx, path);
+
+	if (sync_rc < 0) {
+		LOG_ERR("saveChannels: sync failed (%d), keeping old file", sync_rc);
+		fs_unlink(tmp_path);
+		return;
+	}
+
+	/* Atomic replace — LittleFS 2 rename() replaces the destination
+	 * in a single CRC-protected metadata commit.  No unlink needed. */
+	int rc = fs_rename(tmp_path, path);
+	if (rc < 0) {
+		LOG_ERR("saveChannels: rename %s → %s failed: %d", tmp_path, path, rc);
+	} else {
+		LOG_DBG("saveChannels: saved %u channels to %s", channel_idx, path);
+	}
 }
 
 uint8_t ZephyrDataStore::getBlobByKey(const uint8_t key[], int key_len, uint8_t dest_buf[])

@@ -973,7 +973,7 @@ static DEVICE_API(lora, lr11xx_lora_api) = {
 	static const struct lr11xx_config lr11xx_config_##n = {            \
 		.bus = SPI_DT_SPEC_INST_GET(n,                             \
 			SPI_WORD_SET(8) | SPI_OP_MODE_MASTER |             \
-			SPI_TRANSFER_MSB, 0),                              \
+			SPI_TRANSFER_MSB),                                 \
 		.reset = GPIO_DT_SPEC_INST_GET(n, reset_gpios),            \
 		.busy  = GPIO_DT_SPEC_INST_GET(n, busy_gpios),            \
 		.dio1  = GPIO_DT_SPEC_INST_GET(n, dio1_gpios),            \

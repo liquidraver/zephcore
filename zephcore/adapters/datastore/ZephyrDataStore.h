@@ -76,6 +76,7 @@ private:
 	const char *advBlobsFile() const { return _has_ext_fs ? EXT_ADV_BLOBS_FILE : INT_ADV_BLOBS_FILE; }
 	int maxBlobRecs() const { return _has_ext_fs ? 100 : 20; }
 
+	void cleanStaleTmpFiles();
 	void checkAdvBlobFile();
 	void migrateToExternalFS();
 	bool openRead(const char *path, uint8_t *buf, size_t buf_sz, size_t &out_len);
