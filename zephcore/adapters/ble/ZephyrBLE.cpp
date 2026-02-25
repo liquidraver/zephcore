@@ -43,6 +43,11 @@ LOG_MODULE_REGISTER(zephcore_ble, CONFIG_ZEPHCORE_BLE_LOG_LEVEL);
 /* TX timeout watchdog - reset ble_tx_in_progress if callback never fires */
 #define BLE_TX_TIMEOUT_MS 2000
 
+/* Congestion overflow retry interval — when the TX queue is full, the
+ * stuck frame retries at this cadence.  Slow enough to not hammer the
+ * BLE stack when the link is marginal, fast enough to recover quickly. */
+#define BLE_TX_OVERFLOW_RETRY_MS 250
+
 /* Advertising intervals (Apple Accessory Design Guidelines) */
 #define BT_ADV_INTERVAL_FAST     CONFIG_ZEPHCORE_BLE_ADV_FAST_INTERVAL
 #define BT_ADV_INTERVAL_SLOW     CONFIG_ZEPHCORE_BLE_ADV_SLOW_INTERVAL
@@ -78,6 +83,23 @@ K_MSGQ_DEFINE(ble_recv_queue, sizeof(struct frame), FRAME_QUEUE_SIZE, 4);
 static struct frame tx_retry_frame;
 static bool tx_retry_pending = false;
 
+/* TX congestion control — flow-control mechanism for queue-full conditions.
+ *
+ * When the TX queue is full, instead of blocking or dropping:
+ *   1. Set ble_tx_congested flag → callers (contact iteration, etc.) stop sending
+ *   2. Save the stuck frame to overflow_frame → retried every 250ms
+ *   3. When queue drains below low water mark (1/3) → clear congestion
+ *   4. On disconnect → clear everything
+ *
+ * Water marks (with default FRAME_QUEUE_SIZE=12):
+ *   - Contact iteration pauses:  2/3 = 8 frames (high water)
+ *   - Congestion mode enters:    12/12 = full
+ *   - Congestion mode clears:    1/3 = 4 frames (low water)
+ */
+static bool ble_tx_congested;
+static struct frame overflow_frame;
+static bool overflow_pending;
+
 /* Connection state */
 static struct bt_conn *current_conn;
 static bool nus_notif_enabled;
@@ -94,6 +116,9 @@ static bool adv_is_slow = false;
 
 /* Runtime BLE passkey */
 static uint32_t ble_passkey = CONFIG_ZEPHCORE_BLE_PASSKEY;
+
+/* NUS TX characteristic attribute — resolved at init, avoids hard-coded offset */
+static const struct bt_gatt_attr *nus_tx_attr;
 
 /* ========== Forward declarations ========== */
 
@@ -140,9 +165,11 @@ STRUCT_SECTION_ITERABLE(bt_nus_inst, secure_nus) = {
 
 static void tx_drain_work_fn(struct k_work *work);
 static void adv_slow_work_fn(struct k_work *work);
+static void overflow_retry_work_fn(struct k_work *work);
 
 K_WORK_DELAYABLE_DEFINE(tx_drain_work, tx_drain_work_fn);
 K_WORK_DELAYABLE_DEFINE(adv_slow_work, adv_slow_work_fn);
+K_WORK_DELAYABLE_DEFINE(overflow_retry_work, overflow_retry_work_fn);
 
 /* ========== TX completion callback ========== */
 
@@ -165,7 +192,7 @@ static void ble_tx_complete_cb(struct bt_conn *conn, void *user_data)
 static int secure_nus_send(struct bt_conn *conn, const void *data, uint16_t len)
 {
 	struct bt_gatt_notify_params params = {
-		.attr = &secure_nus_svc.attrs[2],  /* TX characteristic value (not declaration) */
+		.attr = nus_tx_attr,
 		.data = data,
 		.len = len,
 		.func = ble_tx_complete_cb,
@@ -303,12 +330,15 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 		LOG_INF("active_iface = IFACE_NONE");
 	}
 
-	/* Clear queues and retry state */
+	/* Clear queues, retry state, and congestion */
 	k_msgq_purge(&ble_send_queue);
 	k_msgq_purge(&ble_recv_queue);
 	tx_retry_pending = false;
+	overflow_pending = false;
+	ble_tx_congested = false;
 
 	k_work_cancel_delayable(&tx_drain_work);
+	k_work_cancel_delayable(&overflow_retry_work);
 
 	/* Notify main of BLE disconnection */
 	if (ble_cbs && ble_cbs->on_disconnected) {
@@ -379,6 +409,17 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 
 static bool le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
 {
+	/* Enforce our configured connection parameters — reject anything
+	 * outside our preferred range.  The phone will fall back to our
+	 * PPCP (Peripheral Preferred Connection Parameters) on rejection. */
+	if (param->interval_min < BLE_DEFAULT_MIN_INTERVAL ||
+	    param->interval_max > BLE_DEFAULT_MAX_INTERVAL) {
+		LOG_WRN("Rejecting peer conn params: interval %u-%u "
+			"(our range: %u-%u)",
+			param->interval_min, param->interval_max,
+			BLE_DEFAULT_MIN_INTERVAL, BLE_DEFAULT_MAX_INTERVAL);
+		return false;
+	}
 	return true;
 }
 
@@ -464,6 +505,37 @@ static struct bt_conn_auth_info_cb auth_info_cb = {
 	.pairing_failed = pairing_failed,
 };
 
+/* ========== TX congestion overflow retry ========== */
+
+static void overflow_retry_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	if (!overflow_pending) {
+		return;
+	}
+
+	/* Abandon overflow if connection is gone */
+	if (!current_conn || active_iface == ZEPHCORE_IFACE_NONE) {
+		overflow_pending = false;
+		ble_tx_congested = false;
+		LOG_INF("overflow cleared (disconnected)");
+		return;
+	}
+
+	if (k_msgq_put(&ble_send_queue, &overflow_frame, K_NO_WAIT) == 0) {
+		overflow_pending = false;
+		LOG_INF("overflow frame queued hdr=0x%02x, kicking drain",
+			overflow_frame.buf[0]);
+		kick_tx_drain();
+		/* Congestion flag cleared by tx_drain at low water mark */
+	} else {
+		/* Still full — retry at reduced rate */
+		LOG_DBG("overflow retry: queue still full, retry in 250ms");
+		k_work_schedule(&overflow_retry_work, K_MSEC(BLE_TX_OVERFLOW_RETRY_MS));
+	}
+}
+
 /* ========== TX drain work ========== */
 
 static void kick_tx_drain(void)
@@ -503,6 +575,14 @@ static void tx_drain_work_fn(struct k_work *work)
 		return;
 	}
 
+	/* Take a reference snapshot — prevents use-after-free if
+	 * disconnected() fires from another context between our check
+	 * and use of the connection pointer. */
+	struct bt_conn *conn = bt_conn_ref(current_conn);
+	if (!conn) {
+		return;
+	}
+
 	/* Re-entrancy guard - only one TX in flight at a time */
 	if (ble_tx_in_progress) {
 		/* TX timeout watchdog - if callback never fired, reset state */
@@ -512,6 +592,7 @@ static void tx_drain_work_fn(struct k_work *work)
 			/* Fall through to try next TX */
 		} else {
 			LOG_DBG("tx_drain[BLE]: TX in progress, callback will chain");
+			bt_conn_unref(conn);
 			return;
 		}
 	}
@@ -521,15 +602,17 @@ static void tx_drain_work_fn(struct k_work *work)
 		LOG_INF("tx_drain[BLE]: retrying len=%u hdr=0x%02x", (unsigned)tx_retry_frame.len, tx_retry_frame.buf[0]);
 		ble_tx_in_progress = true;
 		ble_tx_start_time = k_uptime_get();
-		err = secure_nus_send(current_conn, tx_retry_frame.buf, tx_retry_frame.len);
+		err = secure_nus_send(conn, tx_retry_frame.buf, tx_retry_frame.len);
 		if (err == 0) {
 			tx_retry_pending = false;
 			LOG_INF("tx_drain[BLE]: retry success");
+			bt_conn_unref(conn);
 			return;  /* Callback will chain to next */
 		} else if (err == -EAGAIN || err == -ENOMEM) {
 			ble_tx_in_progress = false;
 			LOG_DBG("tx_drain[BLE]: retry still busy, wait %dms", BLE_TX_RETRY_MS);
 			k_work_schedule(&tx_drain_work, K_MSEC(BLE_TX_RETRY_MS));
+			bt_conn_unref(conn);
 			return;
 		} else {
 			ble_tx_in_progress = false;
@@ -541,11 +624,27 @@ static void tx_drain_work_fn(struct k_work *work)
 
 	/* Get next frame from queue */
 	if (k_msgq_get(&ble_send_queue, &f, K_NO_WAIT) != 0) {
-		/* TX queue empty - signal idle */
+		/* TX queue empty — clear congestion and signal idle */
+		if (ble_tx_congested) {
+			ble_tx_congested = false;
+			LOG_INF("tx_drain: congestion cleared (queue empty)");
+		}
 		if (ble_cbs && ble_cbs->on_tx_idle) {
 			ble_cbs->on_tx_idle();
 		}
+		bt_conn_unref(conn);
 		return;
+	}
+
+	/* Clear congestion at low water mark (1/3 of queue) — gives headroom
+	 * before hitting full again.  Hysteresis: ON at full, OFF at 1/3. */
+	if (ble_tx_congested) {
+		uint32_t used = k_msgq_num_used_get(&ble_send_queue);
+		if (used <= FRAME_QUEUE_SIZE / 3) {
+			ble_tx_congested = false;
+			LOG_INF("tx_drain: congestion cleared (queue=%u/%u)",
+				used, (unsigned)FRAME_QUEUE_SIZE);
+		}
 	}
 
 	LOG_DBG("tx_drain[BLE]: sending len=%u hdr=0x%02x queue=%u",
@@ -554,11 +653,12 @@ static void tx_drain_work_fn(struct k_work *work)
 	/* Mark TX in progress before calling notify_cb */
 	ble_tx_in_progress = true;
 	ble_tx_start_time = k_uptime_get();
-	err = secure_nus_send(current_conn, f.buf, f.len);
+	err = secure_nus_send(conn, f.buf, f.len);
 
 	if (err == 0) {
 		/* Success - callback will chain to next */
 		LOG_DBG("tx_drain[BLE]: queued for TX");
+		bt_conn_unref(conn);
 		return;
 	} else if (err == -EAGAIN || err == -ENOMEM) {
 		/* BLE buffer full - save for retry */
@@ -567,11 +667,13 @@ static void tx_drain_work_fn(struct k_work *work)
 		tx_retry_pending = true;
 		LOG_DBG("tx_drain[BLE]: BLE busy (err=%d), saved for retry", err);
 		k_work_schedule(&tx_drain_work, K_MSEC(BLE_TX_RETRY_MS));
+		bt_conn_unref(conn);
 		return;
 	} else {
 		/* Other error - drop frame */
 		ble_tx_in_progress = false;
 		LOG_WRN("tx_drain[BLE]: send failed err=%d, dropped frame", err);
+		bt_conn_unref(conn);
 		return;
 	}
 }
@@ -677,6 +779,13 @@ static void adv_slow_work_fn(struct k_work *work)
 void zephcore_ble_init(const struct ble_callbacks *cbs)
 {
 	ble_cbs = cbs;
+
+	/* Resolve NUS TX characteristic attribute once — avoids hard-coded
+	 * array offset in secure_nus_send(). attrs[2] = TX char value
+	 * (attrs[0]=service, attrs[1]=TX char decl, attrs[2]=TX char value,
+	 * attrs[3]=CCC, attrs[4]=RX char decl, attrs[5]=RX char value). */
+	nus_tx_attr = &secure_nus_svc.attrs[2];
+
 	bt_conn_auth_cb_register(&auth_cb);
 	bt_conn_auth_info_cb_register(&auth_info_cb);
 }
@@ -716,8 +825,36 @@ size_t zephcore_ble_send(const uint8_t *data, uint16_t len)
 	memcpy(f.buf, data, len);
 
 	if (k_msgq_put(&ble_send_queue, &f, K_NO_WAIT) != 0) {
-		LOG_WRN("queue full!");
-		return 0;
+		/* Queue full — enter congestion mode.
+		 *
+		 * Instead of blocking (would stall LoRa) or dropping (loses
+		 * frames), we signal congestion so all senders stop, then
+		 * save this frame and retry at a reduced 250ms cadence until
+		 * the queue drains or the connection drops.
+		 *
+		 * Callers check zephcore_ble_is_congested() and hold off:
+		 *   - contact_iter_work: pauses iteration
+		 *   - main thread (sendPush): pushes are best-effort signals,
+		 *     actual message data is safe in the offline queue
+		 */
+		if (!ble_tx_congested) {
+			LOG_WRN("TX queue full (%u/%u), entering congestion",
+				k_msgq_num_used_get(&ble_send_queue),
+				(unsigned)FRAME_QUEUE_SIZE);
+			ble_tx_congested = true;
+		}
+
+		/* Save to overflow — retried at 250ms intervals.
+		 * If overflow already pending, replace with newest frame
+		 * (push notifications are idempotent MSG_WAITING signals). */
+		if (overflow_pending) {
+			LOG_DBG("overflow replaced: 0x%02x → 0x%02x",
+				overflow_frame.buf[0], data[0]);
+		}
+		overflow_frame = f;
+		overflow_pending = true;
+		k_work_schedule(&overflow_retry_work, K_MSEC(BLE_TX_OVERFLOW_RETRY_MS));
+		return len;  /* Accepted into overflow — will be retried */
 	}
 
 	LOG_DBG("queued len=%u hdr=0x%02x queue=%u",
@@ -757,6 +894,11 @@ bool zephcore_ble_is_active(void)
 bool zephcore_ble_is_connected(void)
 {
 	return current_conn != NULL;
+}
+
+bool zephcore_ble_is_congested(void)
+{
+	return ble_tx_congested;
 }
 
 void zephcore_ble_set_passkey(uint32_t passkey)

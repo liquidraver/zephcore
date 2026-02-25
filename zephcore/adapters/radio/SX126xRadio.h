@@ -1,16 +1,11 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
- * ZephCore Radio adapter for SX126x (SX1261/SX1262/SX1268) using Zephyr LoRa driver
+ * ZephCore Radio adapter for SX126x (SX1261/SX1262/SX1268) using native Zephyr driver
  */
 
 #pragma once
 
 #include "LoRaRadioBase.h"
-
-/* SX126x-specific: RX Duty Cycle power saving - uses RadioLib algorithm */
-#define RADIOLIB_MIN_SYMBOLS_SF7_PLUS  8
-#define RADIOLIB_MIN_SYMBOLS_SF6_LESS  12
-#define RADIOLIB_TCXO_DELAY_US         1000  /* ~1ms startup overhead */
 
 namespace mesh {
 
@@ -33,10 +28,6 @@ protected:
 	void hwSetRxBoost(bool enable) override;
 	void hwSetRxDutyCycle(bool enable) override;
 	void hwResetAGC() override;
-
-private:
-	/* SX126x-specific: RadioLib duty cycle timing algorithm */
-	void applyRxDutyCycleIfEnabled();
 };
 
 } /* namespace mesh */

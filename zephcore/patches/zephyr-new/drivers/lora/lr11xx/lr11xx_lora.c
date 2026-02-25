@@ -27,6 +27,11 @@
 
 LOG_MODULE_REGISTER(lr11xx_lora, CONFIG_LORA_LOG_LEVEL);
 
+/* Dedicated DIO1 work queue — keeps LoRa interrupt processing off the
+ * system work queue so USB/BLE/timer work items cannot delay packet RX. */
+#define LR11XX_DIO1_WQ_STACK_SIZE 1536
+K_THREAD_STACK_DEFINE(lr11xx_dio1_wq_stack, LR11XX_DIO1_WQ_STACK_SIZE);
+
 /* ── Driver data structures ─────────────────────────────────────────── */
 
 struct lr11xx_config {
@@ -65,8 +70,9 @@ struct lr11xx_data {
 	/* Async TX state */
 	struct k_poll_signal *tx_signal;
 
-	/* DIO1 work queue */
+	/* DIO1 work — runs on dedicated queue, not system work queue */
 	struct k_work dio1_work;
+	struct k_work_q dio1_wq;
 
 	/* Radio state */
 	volatile bool tx_active;
@@ -175,9 +181,9 @@ static void lr11xx_hardware_reset(struct lr11xx_data *data,
 
 	lr11xx_system_calibrate(ctx, 0x3F);
 
+	/* Tight ±2 MHz image calibration around actual frequency */
 	uint16_t freq_mhz = data->modem_cfg.frequency / 1000000;
-	uint16_t cal_low = (freq_mhz / 4) * 4;
-	lr11xx_system_calibrate_image_in_mhz(ctx, cal_low, cal_low + 4);
+	lr11xx_system_calibrate_image_in_mhz(ctx, freq_mhz - 2, freq_mhz + 2);
 
 	lr11xx_radio_set_pkt_type(ctx, LR11XX_RADIO_PKT_TYPE_LORA);
 
@@ -197,11 +203,16 @@ static void lr11xx_apply_modem_config(struct lr11xx_data *data,
 
 	lr11xx_radio_set_rf_freq(ctx, mc->frequency);
 
+	/* LDRO must be enabled when symbol time > 16.38ms (SF11+/BW125 etc) */
+	uint32_t bw_hz = (uint32_t)(bw_enum_to_khz(mc->bandwidth) * 1000.0f);
+	uint32_t symbol_time_us = ((1U << (uint8_t)mc->datarate) * 1000000U) / bw_hz;
+	uint8_t ldro = (symbol_time_us > 16380) ? 1 : 0;
+
 	lr11xx_radio_mod_params_lora_t mod = {
 		.sf   = (lr11xx_radio_lora_sf_t)mc->datarate,
 		.bw   = bw_enum_to_lr11xx(mc->bandwidth),
 		.cr   = cr_enum_to_lr11xx(mc->coding_rate),
-		.ldro = 0,
+		.ldro = ldro,
 	};
 	lr11xx_radio_set_lora_mod_params(ctx, &mod);
 
@@ -238,7 +249,35 @@ static void lr11xx_apply_modem_config(struct lr11xx_data *data,
 		0);
 }
 
-/* ── RX duty cycle (RadioLib algorithm) ─────────────────────────────── */
+/* ── CAD det_peak lookup (from Semtech ral_lr11xx reference) ─────────── */
+
+static uint8_t lr11xx_cad_det_peak(uint8_t sf, enum lora_signal_bandwidth bw)
+{
+	static const uint8_t peak_bw500[] = {
+		/* SF5  SF6  SF7  SF8  SF9  SF10 SF11 SF12 */
+		   65,  70,  77,  85,  78,  80,  79,  82
+	};
+	static const uint8_t peak_bw250[] = {
+		   60,  61,  64,  72,  63,  71,  73,  75
+	};
+	static const uint8_t peak_bw125[] = {
+		   56,  52,  52,  58,  58,  62,  66,  68
+	};
+
+	if (sf < 5 || sf > 12) return 0x32;
+	uint8_t idx = sf - 5;
+
+	if (bw >= BW_500_KHZ) return peak_bw500[idx];
+	if (bw >= BW_250_KHZ) return peak_bw250[idx];
+	return peak_bw125[idx];
+}
+
+/* ── RX duty cycle (hardware CAD mode) ──────────────────────────────── */
+
+/* LR1110 native CAD duty cycle: on each wake the chip runs a fast CAD
+ * (~2 symbols) instead of full RX.  Preamble detected → auto-RX with
+ * extended timeout.  No activity → straight back to sleep.  The entire
+ * loop runs in HW with zero IRQ overhead per cycle. */
 
 static void lr11xx_apply_rx_duty_cycle(struct lr11xx_data *data)
 {
@@ -248,43 +287,56 @@ static void lr11xx_apply_rx_duty_cycle(struct lr11xx_data *data)
 	uint8_t sf = (uint8_t)mc->datarate;
 	float bw_khz = bw_enum_to_khz(mc->bandwidth);
 	uint16_t preamble_len = mc->preamble_len;
-	uint16_t min_symbols = (sf >= 7) ? 8 : 12;
 
-	int16_t sleep_symbols = (int16_t)preamble_len - (int16_t)min_symbols;
-	if (sleep_symbols <= 0) {
-		LOG_WRN("Preamble too short for duty cycle, using continuous RX");
+	/* Margin must cover:
+	 *   2 sym  CAD scan duration (cad_symb_nb = 2 symbols)
+	 *   4 sym  demodulator preamble acquisition (~4.25 sym minimum)
+	 *   4 sym  RTC jitter + TCXO startup + state transitions
+	 *   ─────
+	 *  10 sym  total — matches the SX126x driver margin and ensures
+	 *          ≥6 symbols of preamble remain after worst-case wake.
+	 *
+	 * The original margin of 4 left only ~2 usable symbols — any TCXO
+	 * startup or timer jitter caused missed packets. */
+	uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
+	int16_t margin = 10;
+	int16_t sleep_symbols = (int16_t)preamble_len - margin;
+
+	if (sleep_symbols < 2) {
+		LOG_WRN("Preamble too short for CAD duty cycle (%d sym), "
+			"continuous RX", preamble_len);
 		data->rx_duty_cycle_enabled = false;
 		lr11xx_radio_set_rx(ctx, 0xFFFFFF);
 		return;
 	}
 
-	uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
+	/* CAD params: 2 symbols, Semtech det_peak table, auto-RX on detect */
+	uint8_t det_peak = lr11xx_cad_det_peak(sf, mc->bandwidth);
+	lr11xx_radio_cad_params_t cad = {
+		.cad_symb_nb     = 1,       /* enum: 1 = 2 symbols */
+		.cad_detect_peak = det_peak,
+		.cad_detect_min  = 10,
+		.cad_exit_mode   = LR11XX_RADIO_CAD_EXIT_MODE_RX,
+		.cad_timeout     = 0,
+	};
+	lr11xx_radio_set_cad_params(ctx, &cad);
 
-	/* Shave 2 symbols off sleep so the wake window always has enough
-	   preamble overlap for detection.  Without this the margin is zero
-	   and any TCXO drift or crystal error causes missed packets. */
-	int16_t sleep_symbols_safe = sleep_symbols - 2;
-	if (sleep_symbols_safe < 1) sleep_symbols_safe = 1;
-	uint32_t sleep_period_us = (uint16_t)sleep_symbols_safe * symbol_us;
-	uint32_t preamble_total_us = (preamble_len + 1) * symbol_us;
-	int32_t wake_calc1 = ((int32_t)preamble_total_us -
-			      ((int32_t)sleep_period_us - 1000)) / 2;
-	uint32_t wake_calc2 = (min_symbols + 1) * symbol_us;
-	uint32_t wake_period_us = (wake_calc1 > 0 &&
-				   (uint32_t)wake_calc1 > wake_calc2)
-				  ? (uint32_t)wake_calc1 : wake_calc2;
+	uint32_t sleep_us = (uint16_t)sleep_symbols * symbol_us;
 
-	/* LR1110 API takes milliseconds */
-	uint32_t rx_ms = (wake_period_us + 500) / 1000;
-	uint32_t sleep_ms = (sleep_period_us + 500) / 1000;
+	/* RX period: on CAD detect, chip enters RX for (2*rx + sleep).
+	 * Must cover remaining preamble + sync word + header. */
+	uint32_t rx_us = (preamble_len + 1) * symbol_us;
+
+	uint32_t rx_ms = (rx_us + 500) / 1000;
+	uint32_t sleep_ms = (sleep_us + 500) / 1000;
 	if (rx_ms < 1) rx_ms = 1;
 	if (sleep_ms < 1) sleep_ms = 1;
 
 	lr11xx_radio_set_rx_duty_cycle(ctx, rx_ms, sleep_ms,
-				       LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
+				       LR11XX_RADIO_RX_DUTY_CYCLE_MODE_CAD);
 
-	LOG_INF("RX duty cycle: rx=%ums sleep=%ums (SF%d BW%.0f)",
-		rx_ms, sleep_ms, sf, (double)bw_khz);
+	LOG_INF("RX CAD duty cycle: rx=%ums sleep=%ums peak=%u (SF%d BW%.0f)",
+		rx_ms, sleep_ms, det_peak, sf, (double)bw_khz);
 }
 
 /* ── Start RX (internal) ────────────────────────────────────────────── */
@@ -327,6 +379,49 @@ static void lr11xx_start_rx(struct lr11xx_data *data,
 	data->tx_active = false;
 }
 
+/* ── Lightweight RX restart (no modem reconfig) ─────────────────────── */
+
+/* Used after RX done / CRC error / timeout — frequency/modulation unchanged,
+ * skip most of lr11xx_apply_modem_config.
+ * Full lr11xx_start_rx() kept for initial start and TX→RX.
+ *
+ * Packet params (preamble, pld_len=255) MUST be re-set on every restart:
+ * the LR1110 can silently corrupt these registers after CRC/header errors
+ * and through CAD→RX transitions, causing missed packets — especially when
+ * small and large packets are interleaved on the mesh.  Arduino MeshCore
+ * applies the same workaround (CustomLR1110Wrapper::onSendFinished). */
+static void lr11xx_restart_rx(struct lr11xx_data *data)
+{
+	void *ctx = &data->hal_ctx;
+	struct lora_modem_config *mc = &data->modem_cfg;
+
+	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
+
+	/* Re-apply packet params — preamble + pld_len=255 for RX */
+	lr11xx_radio_pkt_params_lora_t pkt = {
+		.preamble_len_in_symb = mc->preamble_len,
+		.header_type = LR11XX_RADIO_LORA_PKT_EXPLICIT,
+		.pld_len_in_bytes = 255,
+		.crc = mc->packet_crc_disable ? LR11XX_RADIO_LORA_CRC_OFF
+					      : LR11XX_RADIO_LORA_CRC_ON,
+		.iq = mc->iq_inverted ? LR11XX_RADIO_LORA_IQ_INVERTED
+				      : LR11XX_RADIO_LORA_IQ_STANDARD,
+	};
+	lr11xx_radio_set_lora_pkt_params(ctx, &pkt);
+
+	if (data->rx_duty_cycle_enabled) {
+		lr11xx_apply_rx_duty_cycle(data);
+	} else {
+		lr11xx_radio_set_rx(ctx, 0xFFFFFF);
+	}
+
+	if (data->rx_boost_enabled) {
+		lr11xx_radio_cfg_rx_boosted(ctx, true);
+	}
+
+	data->in_rx_mode = true;
+}
+
 /* ── DIO1 IRQ handler (work queue, thread context) ──────────────────── */
 
 static void lr11xx_dio1_callback(void *user_data);
@@ -360,8 +455,18 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 						   rx_stat.buffer_start_pointer,
 						   rx_stat.pld_len_in_bytes);
 
-			/* Restart RX BEFORE callback (matches SX126x pattern) */
-			lr11xx_start_rx(data, cfg);
+			/* Lightweight RX restart — no reconfig needed */
+			lr11xx_restart_rx(data);
+
+			/* When SNR < 0 the packet RSSI is dominated by
+			 * noise — use the signal-only RSSI estimate for a
+			 * more accurate reading on weak links. */
+			int16_t rssi = pkt_stat.rssi_pkt_in_dbm;
+
+			if (pkt_stat.snr_pkt_in_db < 0 &&
+			    pkt_stat.signal_rssi_pkt_in_dbm > rssi) {
+				rssi = pkt_stat.signal_rssi_pkt_in_dbm;
+			}
 
 			k_mutex_unlock(&data->spi_mutex);
 
@@ -369,7 +474,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 			if (data->async_rx_cb) {
 				data->async_rx_cb(data->dev, data->rx_buf,
 						  rx_stat.pld_len_in_bytes,
-						  pkt_stat.rssi_pkt_in_dbm,
+						  rssi,
 						  pkt_stat.snr_pkt_in_db,
 						  data->async_rx_user_data);
 			}
@@ -377,7 +482,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 		}
 
 		LOG_WRN("RX: invalid len %d", rx_stat.pld_len_in_bytes);
-		lr11xx_start_rx(data, cfg);
+		lr11xx_restart_rx(data);
 	}
 
 	/* ── TX done ── */
@@ -385,7 +490,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 		LOG_INF("TX done");
 		data->tx_active = false;
 
-		/* Restart RX */
+		/* Full restart — modem was reconfigured for TX */
 		lr11xx_start_rx(data, cfg);
 
 		/* Raise TX signal */
@@ -396,10 +501,10 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 
 	/* ── Timeout ── */
 	if (irq & LR11XX_SYSTEM_IRQ_TIMEOUT) {
-		LOG_INF("Timeout IRQ — restarting RX (duty_cycle=%d)",
+		LOG_DBG("Timeout IRQ — restarting RX (duty_cycle=%d)",
 			data->rx_duty_cycle_enabled);
 		if (!data->tx_active) {
-			lr11xx_start_rx(data, cfg);
+			lr11xx_restart_rx(data);
 		}
 	}
 
@@ -418,7 +523,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 		}
 
 		if (!data->tx_active) {
-			lr11xx_start_rx(data, cfg);
+			lr11xx_restart_rx(data);
 		}
 
 		k_mutex_unlock(&data->spi_mutex);
@@ -438,7 +543,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 static void lr11xx_dio1_callback(void *user_data)
 {
 	struct lr11xx_data *data = (struct lr11xx_data *)user_data;
-	k_work_submit(&data->dio1_work);
+	k_work_submit_to_queue(&data->dio1_wq, &data->dio1_work);
 }
 
 /* Forward declaration — hw_init is defined after driver API functions */
@@ -464,6 +569,13 @@ static int lr11xx_lora_config(const struct device *dev,
 
 	memcpy(&data->modem_cfg, config, sizeof(*config));
 	data->configured = true;
+
+	/* Tight ±2 MHz image calibration for the configured frequency */
+	k_mutex_lock(&data->spi_mutex, K_FOREVER);
+	uint16_t freq_mhz = config->frequency / 1000000;
+	lr11xx_system_calibrate_image_in_mhz(&data->hal_ctx,
+					      freq_mhz - 2, freq_mhz + 2);
+	k_mutex_unlock(&data->spi_mutex);
 
 	LOG_INF("config: %uHz SF%d BW%d CR%d pwr=%d tx=%d",
 		config->frequency, config->datarate, config->bandwidth,
@@ -796,6 +908,12 @@ static int lr11xx_lora_init(const struct device *dev)
 
 	k_mutex_init(&data->spi_mutex);
 	k_work_init(&data->dio1_work, lr11xx_dio1_work_handler);
+
+	/* Start dedicated DIO1 work queue at high priority */
+	k_work_queue_start(&data->dio1_wq, lr11xx_dio1_wq_stack,
+			   K_THREAD_STACK_SIZEOF(lr11xx_dio1_wq_stack),
+			   K_PRIO_COOP(7), NULL);
+	k_thread_name_set(&data->dio1_wq.thread, "lr11xx_dio1");
 
 	/* Check SPI bus */
 	if (!spi_is_ready_dt(&cfg->bus)) {

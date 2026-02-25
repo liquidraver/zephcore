@@ -216,9 +216,12 @@ static void contact_iter_work_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
 #ifdef ZEPHCORE_LORA
-	/* Check if send queue has space before continuing iteration
-	 * Match Arduino's isWriteBusy(): busy when queue >= 2/3 full (8 of 12)
-	 */
+	/* Don't iterate while BLE TX is congested — wait for drain to clear.
+	 * Also check 2/3 high-water mark (catches stray frames before full). */
+	if (zephcore_ble_is_congested()) {
+		return;
+	}
+
 	uint32_t used = k_msgq_num_used_get(zephcore_ble_get_send_queue());
 	uint32_t queue_size = CONFIG_ZEPHCORE_BLE_QUEUE_SIZE;
 	bool has_space = (used < (queue_size * 2 / 3));

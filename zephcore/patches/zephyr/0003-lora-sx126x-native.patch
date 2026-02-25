@@ -1,8 +1,178 @@
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index 8e0ca45c271..828faaaf37f 100644
+index 8e0ca45c271..1816ff8f924 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
-@@ -451,7 +451,14 @@ static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
+@@ -9,10 +9,19 @@
+ #include <zephyr/sys/byteorder.h>
+ 
+ #include "sx126x.h"
++#include "sx126x_ext.h"
+ 
+ #include <zephyr/logging/log.h>
+ LOG_MODULE_REGISTER(sx126x, CONFIG_LORA_LOG_LEVEL);
+ 
++/* Dedicated DIO1 work queue — keeps LoRa interrupt processing off the
++ * system work queue so USB/BLE/timer work items cannot delay packet RX. */
++#define SX126X_DIO1_WQ_STACK_SIZE 1536
++K_THREAD_STACK_DEFINE(sx126x_dio1_wq_stack, SX126X_DIO1_WQ_STACK_SIZE);
++
++/* Register not in sx126x_regs.h — only used for §15.3 workaround */
++#define SX126X_REG_EVT_CLR 0x0920
++
+ static uint8_t bandwidth_to_reg(enum lora_signal_bandwidth bw)
+ {
+ 	switch (bw) {
+@@ -172,22 +181,10 @@ static int sx126x_calibrate_image(const struct device *dev, uint32_t freq)
+ {
+ 	uint8_t buf[2];
+ 
+-	if (freq > 900000000) {
+-		buf[0] = 0xE1;
+-		buf[1] = 0xE9;
+-	} else if (freq > 850000000) {
+-		buf[0] = 0xD7;
+-		buf[1] = 0xDB;
+-	} else if (freq > 770000000) {
+-		buf[0] = 0xC1;
+-		buf[1] = 0xC5;
+-	} else if (freq > 460000000) {
+-		buf[0] = 0x75;
+-		buf[1] = 0x81;
+-	} else {
+-		buf[0] = 0x6B;
+-		buf[1] = 0x6F;
+-	}
++	/* Calibrate ±2 MHz around the actual frequency.
++	 * CalibrateImage bytes are in 4 MHz steps (freq_Hz / 4000000). */
++	buf[0] = (uint8_t)((freq - 2000000) / 4000000);
++	buf[1] = (uint8_t)((freq + 2000000) / 4000000);
+ 
+ 	return sx126x_hal_write_cmd(dev, SX126X_CMD_CALIBRATE_IMAGE, buf, 2);
+ }
+@@ -267,6 +264,7 @@ static int sx126x_set_packet_params(const struct device *dev,
+ 				    uint8_t invert_iq)
+ {
+ 	uint8_t buf[6];
++	int ret;
+ 
+ 	sys_put_be16(preamble_len, &buf[0]);
+ 	buf[2] = header_type;
+@@ -274,7 +272,28 @@ static int sx126x_set_packet_params(const struct device *dev,
+ 	buf[4] = crc_mode;
+ 	buf[5] = invert_iq;
+ 
+-	return sx126x_hal_write_cmd(dev, SX126X_CMD_SET_PACKET_PARAMS, buf, 6);
++	ret = sx126x_hal_write_cmd(dev, SX126X_CMD_SET_PACKET_PARAMS, buf, 6);
++	if (ret < 0) {
++		return ret;
++	}
++
++	/* §15.4 IQ Polarity workaround (datasheet errata).
++	 * After SetPacketParams, register 0x0736 bit 2 must be:
++	 *   SET   for standard IQ (non-inverted)
++	 *   CLEAR for inverted IQ
++	 * Without this fix, inverted-IQ packets are not received. */
++	uint8_t iq_val;
++
++	ret = sx126x_hal_read_regs(dev, SX126X_REG_IQ_POLARITY, &iq_val, 1);
++	if (ret < 0) {
++		return ret;
++	}
++	if (invert_iq == SX126X_LORA_IQ_INVERTED) {
++		iq_val &= ~BIT(2);
++	} else {
++		iq_val |= BIT(2);
++	}
++	return sx126x_hal_write_regs(dev, SX126X_REG_IQ_POLARITY, &iq_val, 1);
+ }
+ 
+ static int sx126x_set_sync_word(const struct device *dev, bool public_network)
+@@ -307,6 +326,7 @@ static int sx126x_set_tx(const struct device *dev, uint32_t timeout_ms)
+ static int sx126x_set_rx(const struct device *dev, uint32_t timeout_ms)
+ {
+ 	uint32_t timeout;
++	int ret;
+ 
+ 	if (timeout_ms == 0) {
+ 		timeout = SX126X_RX_TIMEOUT_CONTINUOUS;
+@@ -317,7 +337,23 @@ static int sx126x_set_rx(const struct device *dev, uint32_t timeout_ms)
+ 	uint8_t buf[3];
+ 
+ 	sys_put_be24(timeout, buf);
+-	return sx126x_hal_write_cmd(dev, SX126X_CMD_SET_RX, buf, 3);
++	ret = sx126x_hal_write_cmd(dev, SX126X_CMD_SET_RX, buf, 3);
++	if (ret < 0) {
++		return ret;
++	}
++
++	/* §15.3 Implicit header mode timeout workaround (datasheet errata).
++	 * After SetRx(), clear bit 0 of register 0x0920 to prevent the
++	 * RX timer from continuing to run after reception completes.
++	 * Applied unconditionally per Semtech reference implementation. */
++	uint8_t evt;
++
++	ret = sx126x_hal_read_regs(dev, SX126X_REG_EVT_CLR, &evt, 1);
++	if (ret < 0) {
++		return ret;
++	}
++	evt &= ~BIT(0);
++	return sx126x_hal_write_regs(dev, SX126X_REG_EVT_CLR, &evt, 1);
+ }
+ 
+ static int sx126x_get_rx_buffer_status(const struct device *dev,
+@@ -341,12 +377,18 @@ static int sx126x_get_packet_status(const struct device *dev,
+ 	uint8_t buf[3];
+ 	int ret;
+ 
+-	ret = sx126x_hal_read_cmd(dev, SX126X_CMD_GET_PACKET_STATUS, buf, 2);
++	ret = sx126x_hal_read_cmd(dev, SX126X_CMD_GET_PACKET_STATUS, buf, 3);
+ 	if (ret == 0) {
+ 		/* RSSI is -value/2 dBm */
+-		*rssi = -((int16_t)buf[0] >> 1);
++		int16_t pkt_rssi = -((int16_t)buf[0] >> 1);
+ 		/* SNR is value/4 dB (signed) */
+ 		*snr = ((int8_t)buf[1]) >> 2;
++		/* SignalRssiPkt (byte 2) = LoRa signal RSSI excluding noise.
++		 * When SNR < 0 the packet RSSI is dominated by noise —
++		 * use the signal-only estimate for a more accurate reading. */
++		int16_t sig_rssi = -((int16_t)buf[2] >> 1);
++
++		*rssi = (*snr < 0 && sig_rssi > pkt_rssi) ? sig_rssi : pkt_rssi;
+ 	}
+ 
+ 	return ret;
+@@ -419,6 +461,21 @@ static int sx126x_chip_init(const struct device *dev)
+ 		return ret;
+ 	}
+ 
++	/* After TX/RX, fall back to STDBY_XOSC instead of STDBY_RC.
++	 * Keeps the crystal warm so the next SetRx skips the ~500 us
++	 * XOSC startup, reducing the deaf window between packets. */
++	{
++		uint8_t fallback = 0x40; /* STDBY_XOSC */
++
++		ret = sx126x_hal_write_cmd(dev,
++					   SX126X_CMD_SET_RX_TX_FALLBACK_MODE,
++					   &fallback, 1);
++		if (ret < 0) {
++			LOG_ERR("Set fallback mode failed: %d", ret);
++			return ret;
++		}
++	}
++
+ 	/* Configure IRQs on DIO1: TX done, RX done, timeout */
+ 	uint16_t irq_mask = SX126X_IRQ_TX_DONE | SX126X_IRQ_RX_DONE |
+ 			    SX126X_IRQ_RX_TX_TIMEOUT | SX126X_IRQ_CRC_ERR;
+@@ -443,7 +500,7 @@ static void sx126x_dio1_callback(const struct device *dev)
+ {
+ 	struct sx126x_data *data = dev->data;
+ 
+-	k_work_submit(&data->irq_work);
++	k_work_submit_to_queue(&data->dio1_wq, &data->irq_work);
+ }
+ 
+ static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
+@@ -451,11 +508,108 @@ static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
  	const struct sx126x_hal_config *config = dev->config;
  
  	sx126x_hal_set_antenna_enable(dev, enable);
@@ -18,3 +188,319 @@ index 8e0ca45c271..828faaaf37f 100644
  		sx126x_hal_set_rf_switch(dev, enable && tx);
  	}
  }
+ 
++/* ── RX duty cycle (RadioLib algorithm) ─────────────────────────────── */
++
++#define SX126X_DC_MIN_SYMBOLS_SF7_PLUS  8
++#define SX126X_DC_MIN_SYMBOLS_SF6_LESS  12
++#define SX126X_DC_TCXO_DELAY_US         1000
++
++static void sx126x_apply_rx_duty_cycle(struct sx126x_data *data)
++{
++	const struct device *dev = data->dev;
++	struct lora_modem_config *mc = &data->config;
++
++	uint8_t sf = (uint8_t)mc->datarate;
++	uint32_t bw_hz = bandwidth_to_hz(mc->bandwidth);
++	float bw_khz = (float)bw_hz / 1000.0f;
++	uint16_t preamble_len = mc->preamble_len;
++
++	uint16_t min_symbols = (sf >= 7) ? SX126X_DC_MIN_SYMBOLS_SF7_PLUS
++					 : SX126X_DC_MIN_SYMBOLS_SF6_LESS;
++
++	int16_t sleep_symbols = (int16_t)preamble_len - (int16_t)min_symbols;
++	if (sleep_symbols <= 0) {
++		LOG_WRN("Preamble too short for duty cycle (need >%d, have %d)",
++			min_symbols, preamble_len);
++		data->rx_duty_cycle_enabled = false;
++		sx126x_set_rx(dev, 0);
++		return;
++	}
++
++	uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
++
++	/* Shave 2 symbols off sleep for timing margin */
++	int16_t sleep_symbols_safe = sleep_symbols - 2;
++	if (sleep_symbols_safe < 1) {
++		sleep_symbols_safe = 1;
++	}
++	uint32_t sleep_period_us = (uint16_t)sleep_symbols_safe * symbol_us;
++
++	uint32_t preamble_total_us = (preamble_len + 1) * symbol_us;
++	int32_t wake_calc1 = ((int32_t)preamble_total_us -
++			      ((int32_t)sleep_period_us - SX126X_DC_TCXO_DELAY_US)) / 2;
++	uint32_t wake_calc2 = (min_symbols + 1) * symbol_us;
++
++	uint32_t wake_period_us = (wake_calc1 > 0 && (uint32_t)wake_calc1 > wake_calc2)
++				  ? (uint32_t)wake_calc1 : wake_calc2;
++
++	/* SetRxDutyCycle takes times in 15.625us steps (multiply by 64/1000) */
++	uint32_t rx_time = (wake_period_us * 64) / 1000;
++	uint32_t sleep_time = (sleep_period_us * 64) / 1000;
++
++	if (rx_time < 64) {
++		rx_time = 64;
++	}
++	if (sleep_time < 64) {
++		sleep_time = 64;
++	}
++
++	/* SPI command: 3 bytes rx_period + 3 bytes sleep_period */
++	uint8_t buf[6];
++
++	sys_put_be24(rx_time, &buf[0]);
++	sys_put_be24(sleep_time, &buf[3]);
++	sx126x_hal_write_cmd(dev, SX126X_CMD_SET_RX_DUTY_CYCLE, buf, 6);
++
++	uint32_t rx_ms = (rx_time * 1000) / 64000;
++	uint32_t sleep_ms = (sleep_time * 1000) / 64000;
++	LOG_DBG("RX duty cycle: SF%d rx=%ums sleep=%ums", sf, rx_ms, sleep_ms);
++}
++
++/* ── Lightweight RX restart ─────────────────────────────────────────── */
++
++/* Restart RX as fast as possible — used for RX→RX transitions in the
++ * IRQ handler.  Sends SetRx(continuous) directly, skipping the §15.3
++ * workaround (only needed for implicit-header timed RX).  This saves
++ * 2 SPI register transactions (~200 us) on every received packet. */
++static void sx126x_restart_rx(const struct device *dev, struct sx126x_data *data)
++{
++	if (data->rx_duty_cycle_enabled) {
++		sx126x_apply_rx_duty_cycle(data);
++	} else {
++		uint8_t buf[3];
++
++		sys_put_be24(SX126X_RX_TIMEOUT_CONTINUOUS, buf);
++		sx126x_hal_write_cmd(dev, SX126X_CMD_SET_RX, buf, 3);
++	}
++
++	if (data->rx_boost_enabled) {
++		sx126x_set_rx_gain(dev, true);
++	}
++}
++
+ static void sx126x_handle_irq_tx_done(const struct device *dev)
+ {
+ 	struct sx126x_data *data = dev->data;
+@@ -510,12 +664,23 @@ static void sx126x_handle_irq_rx_done(const struct device *dev, uint16_t irq_sta
+ 
+ 	/* Handle async callback or signal sync receiver */
+ 	if (data->rx_cb != NULL) {
+-		/* Async mode - call callback and restart RX */
+-		data->rx_cb(dev, data->rx_buf, result.len,
+-			    result.rssi, result.snr,
+-			    data->rx_cb_user_data);
+-		/* Restart RX for continuous reception */
+-		sx126x_set_rx(dev, 0);
++		/* Restart RX FIRST — minimise the deaf window.
++		 * The callback (mesh processing) can take 100s of us;
++		 * doing it before restart would lose back-to-back packets.
++		 * Safe: we're on a cooperative work queue so the next
++		 * DIO1 work item won't preempt us, and the callback
++		 * copies rx_buf before returning. */
++		sx126x_restart_rx(dev, data);
++
++		if (result.status < 0) {
++			data->rx_cb(dev, NULL, 0,
++				    result.rssi, result.snr,
++				    data->rx_cb_user_data);
++		} else {
++			data->rx_cb(dev, data->rx_buf, result.len,
++				    result.rssi, result.snr,
++				    data->rx_cb_user_data);
++		}
+ 	} else {
+ 		/* Sync mode */
+ 		atomic_set(&data->state, SX126X_STATE_IDLE);
+@@ -621,6 +786,29 @@ static int sx126x_lora_config(const struct device *dev,
+ 		goto out;
+ 	}
+ 
++	/* §15.1 TX Modulation workaround (datasheet errata).
++	 * For 500 kHz BW, clear bit 2 of register 0x0889.
++	 * For all other bandwidths, set bit 2 (restore default). */
++	{
++		uint8_t txmod;
++
++		ret = sx126x_hal_read_regs(dev, SX126X_REG_TX_MODULATION,
++					   &txmod, 1);
++		if (ret < 0) {
++			goto out;
++		}
++		if (config->bandwidth == BW_500_KHZ) {
++			txmod &= ~BIT(2);
++		} else {
++			txmod |= BIT(2);
++		}
++		ret = sx126x_hal_write_regs(dev, SX126X_REG_TX_MODULATION,
++					    &txmod, 1);
++		if (ret < 0) {
++			goto out;
++		}
++	}
++
+ 	/* Set sync word */
+ 	ret = sx126x_set_sync_word(dev, config->public_network);
+ 	if (ret < 0) {
+@@ -691,6 +879,29 @@ static int sx126x_lora_send_async(const struct device *dev,
+ 	/* Enable antenna and set TX path */
+ 	sx126x_set_rf_path(dev, true, true);
+ 
++	/* §15.2 TX Clamp workaround (datasheet errata) — SX1262 only.
++	 * Set bits [4:1] of register 0x08D8 before SetTx to prevent
++	 * PA overshoot that can damage the device. */
++	{
++		const struct sx126x_hal_config *hal_cfg = dev->config;
++
++		if (!hal_cfg->is_sx1261) {
++			uint8_t clamp;
++
++			ret = sx126x_hal_read_regs(dev, SX126X_REG_TX_CLAMP_CFG,
++						   &clamp, 1);
++			if (ret < 0) {
++				goto out_error;
++			}
++			clamp |= 0x1E;
++			ret = sx126x_hal_write_regs(dev, SX126X_REG_TX_CLAMP_CFG,
++						    &clamp, 1);
++			if (ret < 0) {
++				goto out_error;
++			}
++		}
++	}
++
+ 	/* Start transmission with 10 second timeout */
+ 	ret = sx126x_set_tx(dev, 10000);
+ 	if (ret < 0) {
+@@ -974,6 +1185,77 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+ 	return 0;
+ }
+ 
++/* ── Extension API (sx126x_ext.h) ──────────────────────────────────── */
++
++int16_t sx126x_get_rssi_inst(const struct device *dev)
++{
++	struct sx126x_data *data = dev->data;
++	uint8_t buf[1];
++	int ret;
++
++	if (k_mutex_lock(&data->lock, K_NO_WAIT) != 0) {
++		return -128;
++	}
++
++	ret = sx126x_hal_read_cmd(dev, SX126X_CMD_GET_RSSI_INST, buf, 1);
++	k_mutex_unlock(&data->lock);
++
++	if (ret < 0) {
++		return -128;
++	}
++
++	return -((int16_t)buf[0] >> 1);
++}
++
++bool sx126x_is_receiving(const struct device *dev)
++{
++	struct sx126x_data *data = dev->data;
++	uint16_t irq_status = 0;
++
++	if (k_mutex_lock(&data->lock, K_NO_WAIT) != 0) {
++		return false;
++	}
++
++	sx126x_get_irq_status(dev, &irq_status);
++	k_mutex_unlock(&data->lock);
++
++	return (irq_status & (SX126X_IRQ_PREAMBLE_DETECTED |
++			      SX126X_IRQ_HEADER_VALID)) != 0;
++}
++
++void sx126x_set_rx_duty_cycle(const struct device *dev, bool enable)
++{
++	struct sx126x_data *data = dev->data;
++
++	data->rx_duty_cycle_enabled = enable;
++	LOG_DBG("RX duty cycle %s", enable ? "enabled" : "disabled");
++
++	/* If currently in RX, apply immediately */
++	if (atomic_get(&data->state) == SX126X_STATE_RX) {
++		k_mutex_lock(&data->lock, K_FOREVER);
++		if (enable && data->config_valid) {
++			sx126x_apply_rx_duty_cycle(data);
++		} else {
++			sx126x_set_rx(dev, 0);
++		}
++		if (data->rx_boost_enabled) {
++			sx126x_set_rx_gain(dev, true);
++		}
++		k_mutex_unlock(&data->lock);
++	}
++}
++
++void sx126x_set_rx_boost(const struct device *dev, bool enable)
++{
++	struct sx126x_data *data = dev->data;
++
++	data->rx_boost_enabled = enable;
++
++	k_mutex_lock(&data->lock, K_FOREVER);
++	sx126x_set_rx_gain(dev, enable);
++	k_mutex_unlock(&data->lock);
++}
++
+ static const struct lora_driver_api sx126x_lora_api = {
+ 	.config = sx126x_lora_config,
+ 	.send = sx126x_lora_send,
+@@ -999,6 +1281,14 @@ static int sx126x_init(const struct device *dev)
+ 	data->dev = dev;
+ 	atomic_set(&data->state, SX126X_STATE_IDLE);
+ 	data->config_valid = false;
++	data->rx_duty_cycle_enabled = false;
++	data->rx_boost_enabled = false;
++
++	/* Start dedicated DIO1 work queue */
++	k_work_queue_start(&data->dio1_wq, sx126x_dio1_wq_stack,
++			   K_THREAD_STACK_SIZEOF(sx126x_dio1_wq_stack),
++			   CONFIG_SYSTEM_WORKQUEUE_PRIORITY, NULL);
++	k_thread_name_set(&data->dio1_wq.thread, "sx126x_dio1");
+ 
+ 	/* Initialize HAL */
+ 	ret = sx126x_hal_init(dev);
+diff --git a/drivers/lora/native/sx126x/sx126x.h b/drivers/lora/native/sx126x/sx126x.h
+index 1490a010254..ef5b15502db 100644
+--- a/drivers/lora/native/sx126x/sx126x.h
++++ b/drivers/lora/native/sx126x/sx126x.h
+@@ -59,7 +59,12 @@ struct sx126x_data {
+ 
+ 	/* Deferred work for interrupt handling */
+ 	struct k_work irq_work;
++	struct k_work_q dio1_wq;
+ 	const struct device *dev;
++
++	/* Extension features (duty cycle, boost) */
++	bool rx_duty_cycle_enabled;
++	bool rx_boost_enabled;
+ };
+ 
+ #endif /* ZEPHYR_DRIVERS_LORA_SX126X_SX126X_INTERNAL_H_ */
+diff --git a/drivers/lora/native/sx126x/sx126x_hal.c b/drivers/lora/native/sx126x/sx126x_hal.c
+index bdf962e3343..de60d18b694 100644
+--- a/drivers/lora/native/sx126x/sx126x_hal.c
++++ b/drivers/lora/native/sx126x/sx126x_hal.c
+@@ -101,8 +101,16 @@ bool sx126x_hal_is_busy(const struct device *dev)
+ 
+ int sx126x_hal_wait_busy(const struct device *dev, uint32_t timeout_ms)
+ {
++	/* Fast path: most SX126x commands finish BUSY in <650 us.
++	 * Busy-wait first to avoid the ~1 ms k_msleep() scheduler
++	 * penalty, which would otherwise dominate RX turnaround. */
++	if (WAIT_FOR(!sx126x_hal_is_busy(dev), 1000, k_busy_wait(10))) {
++		return 0;
++	}
++
++	/* Slow path: long operations like calibration (several ms). */
+ 	if (!WAIT_FOR(!sx126x_hal_is_busy(dev),
+-		      timeout_ms * 1000,
++		      (timeout_ms * 1000) - 1000,
+ 		      k_msleep(1))) {
+ 		LOG_WRN("Busy timeout after %u ms", timeout_ms);
+ 		return -ETIMEDOUT;

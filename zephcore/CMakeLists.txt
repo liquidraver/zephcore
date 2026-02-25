@@ -14,21 +14,19 @@ cmake_minimum_required(VERSION 3.20.0)
 # Directory layout:
 #   patches/zephyr/*.patch       - unified diffs applied to the Zephyr tree
 #   patches/zephyr-new/          - new files copied to the Zephyr tree (no upstream)
-#   patches/loramac-node/*.patch - unified diffs for modules/lib/loramac-node
 #   patches/espressif/*.patch    - unified diffs for modules/hal/espressif
 #
 # Zephyr patches:
 #   0001-lora-lr11xx-build       - CMakeLists.txt + Kconfig (lr11xx subdirectory)
-#   0002-lora-sx12xx-common      - RX error callback, bandwidth mapping, fast TX/RX
-#   0003-lora-sx126x-native      - PA module RF switch fix (dio2-tx-enable)
-#   0004-lora-sx126x-standalone  - DIO1 IRQ error logging
+#   0003-lora-sx126x-native      - native driver: DIO1 WQ, duty cycle, CRC fix,
+#                                  extension API, RF switch fix
 #   0005-gnss-air530z-easy       - EASY ephemeris prediction (PMTK869) + Kconfig
 #   0006-blobs-py                - west blobs command fix
 # New files (copied, not patched):
 #   drivers/lora/lr11xx/*        - LR11xx Zephyr LoRa driver
+#   drivers/lora/native/sx126x/sx126x_ext.h - SX126x extension API header
 #   dts/bindings/lora/semtech,lr1110.yaml - LR1110 DTS binding
 # Module patches:
-#   loramac-node: restore 10-element Bandwidths[] + LDRO fix
 #   espressif: MCUboot config flexibility (mbedtls, validation, sector count)
 #
 
@@ -106,16 +104,6 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new)
         configure_file(${SRC_FILE} ${DST_FILE} COPYONLY)
         message(STATUS "  [zephyr-new] ${REL_PATH}")
     endforeach()
-endif()
-
-# Apply unified diff patches to loramac-node module
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/loramac-node)
-    message(STATUS "Applying ZephCore patches to loramac-node...")
-    zephcore_apply_patches(
-        "${CMAKE_CURRENT_SOURCE_DIR}/patches/loramac-node"
-        "${MODULES_DIR}/lib/loramac-node"
-        "loramac-node"
-    )
 endif()
 
 # Apply unified diff patches to espressif module
@@ -367,10 +355,15 @@ if(CONFIG_ZEPHCORE_RADIO_LR1110)
     ${ZEPHYR_DIR}/drivers/lora/lr11xx
   )
 else()
-  # Default: SX126x via Zephyr LoRa driver
-  message(STATUS "ZephCore Radio: SX126x (Zephyr LoRa driver)")
+  # Default: SX126x via native Zephyr LoRa driver
+  message(STATUS "ZephCore Radio: SX126x (native Zephyr driver)")
   target_sources(app PRIVATE
     adapters/radio/SX126xRadio.cpp
+  )
+  # Extension API header (sx126x_ext.h) is in the Zephyr driver tree
+  get_filename_component(ZEPHYR_DIR_SX ${CMAKE_CURRENT_SOURCE_DIR}/../zephyr ABSOLUTE)
+  target_include_directories(app PRIVATE
+    ${ZEPHYR_DIR_SX}/drivers/lora/native/sx126x
   )
 endif()
 

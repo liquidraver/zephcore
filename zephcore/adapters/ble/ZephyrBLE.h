@@ -68,6 +68,12 @@ bool zephcore_ble_is_active(void);
 bool zephcore_ble_is_connected(void);
 
 /**
+ * Check if BLE TX is congested (queue full, overflow retrying).
+ * Callers should stop sending until this clears.
+ */
+bool zephcore_ble_is_congested(void);
+
+/**
  * Set the BLE passkey at runtime.
  */
 void zephcore_ble_set_passkey(uint32_t passkey);

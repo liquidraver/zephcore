@@ -229,8 +229,7 @@ static bool configParamsEqual(const struct lora_modem_config &a,
 			      const struct lora_modem_config &b)
 {
 	/* CRITICAL: a.tx == b.tx MUST be compared — without it, switching
-	 * RX→TX skips RadioSetTxConfig(), leaving TxTimeout=0 which causes
-	 * the loramac-node software timeout to fire after 1ms and break TX. */
+	 * RX→TX skips lora_config() for TX params, breaking transmit. */
 	return a.frequency == b.frequency &&
 	       a.bandwidth == b.bandwidth &&
 	       a.datarate == b.datarate &&
@@ -242,6 +241,25 @@ static bool configParamsEqual(const struct lora_modem_config &a,
 	       a.public_network == b.public_network;
 }
 
+/**
+ * Check if only the TX/RX direction changed (all radio params identical).
+ * Used to skip the full lora_config() call on TX↔RX transitions when
+ * the driver already has valid TX and RX configs from previous calls.
+ */
+static bool onlyDirectionDiffers(const struct lora_modem_config &a,
+				 const struct lora_modem_config &b)
+{
+	return a.frequency == b.frequency &&
+	       a.bandwidth == b.bandwidth &&
+	       a.datarate == b.datarate &&
+	       a.coding_rate == b.coding_rate &&
+	       a.preamble_len == b.preamble_len &&
+	       a.tx_power == b.tx_power &&
+	       a.iq_inverted == b.iq_inverted &&
+	       a.public_network == b.public_network &&
+	       a.tx != b.tx;
+}
+
 void LoRaRadioBase::configureRx()
 {
 	struct lora_modem_config cfg;
@@ -249,6 +267,18 @@ void LoRaRadioBase::configureRx()
 
 	if (_config_cached && configParamsEqual(cfg, _last_cfg)) {
 		LOG_DBG("configureRx: params unchanged, skipping hwConfigure");
+		return;
+	}
+
+	/* Fast path: if only the TX/RX direction changed, skip the full
+	 * hwConfigure → lora_config() call.  The driver already has a valid
+	 * RX config (RadioSetRxConfig) from a previous cycle — Radio.Rx(0)
+	 * in hwStartReceive() will use those register values directly.
+	 * This avoids the modem_acquire → modem_release → Radio.Sleep()
+	 * round-trip that wastes ~5 ms on every TX→RX transition. */
+	if (_config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
+		LOG_DBG("configureRx: direction-only change, skip hwConfigure");
+		_last_cfg = cfg;
 		return;
 	}
 
@@ -268,6 +298,15 @@ void LoRaRadioBase::configureTx()
 
 	if (_config_cached && configParamsEqual(cfg, _last_cfg)) {
 		LOG_DBG("configureTx: params unchanged, skipping hwConfigure");
+		return;
+	}
+
+	/* Fast path: direction-only change (RX→TX).  The driver already
+	 * has a valid TX config (RadioSetTxConfig with TxTimeout=4000)
+	 * from a previous cycle — Radio.Send() will use those values. */
+	if (_config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
+		LOG_DBG("configureTx: direction-only change, skip hwConfigure");
+		_last_cfg = cfg;
 		return;
 	}
 
