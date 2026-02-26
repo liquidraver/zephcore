@@ -1,0 +1,31 @@
+/*
+ * T1000-E LR1110 Updater overlay
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Minimal overlay — only SPI1 (LR1110 radio) and USB console.
+ * Disables GPS UART, I2C sensors, and other peripherals not needed for update.
+ */
+
+/* Disable UART0 (GPS) — not needed, prevents driver init hang */
+&uart0 {
+	status = "disabled";
+};
+
+/* Disable I2C0 (sensors) — not needed */
+&i2c0 {
+	status = "disabled";
+};
+
+/* Route console to USB CDC ACM */
+/ {
+	chosen {
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+	};
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};

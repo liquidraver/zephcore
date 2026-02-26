@@ -81,6 +81,7 @@ struct lr11xx_data {
 	/* Extension features (duty cycle, boost) */
 	bool rx_duty_cycle_enabled;
 	bool rx_boost_enabled;
+	bool rx_boost_applied;  /* RX boost register written to hardware */
 
 	/* Deferred hardware init — heavy SPI/radio work runs on first config() */
 	bool hw_initialized;
@@ -185,7 +186,16 @@ static void lr11xx_hardware_reset(struct lr11xx_data *data,
 	uint16_t freq_mhz = data->modem_cfg.frequency / 1000000;
 	lr11xx_system_calibrate_image_in_mhz(ctx, freq_mhz - 2, freq_mhz + 2);
 
+	lr11xx_radio_set_rx_tx_fallback_mode(ctx, LR11XX_RADIO_FALLBACK_STDBY_RC);
+
 	lr11xx_radio_set_pkt_type(ctx, LR11XX_RADIO_PKT_TYPE_LORA);
+
+	lr11xx_system_clear_errors(ctx);
+	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
+
+	/* RX boost lost on hardware reset — flag it for re-apply in
+	 * start_rx after modem config (where radio is fully configured). */
+	data->rx_boost_applied = false;
 
 	lr11xx_hal_enable_dio1_irq(&data->hal_ctx);
 
@@ -363,18 +373,31 @@ static void lr11xx_start_rx(struct lr11xx_data *data,
 	/* Apply modem config for RX */
 	lr11xx_apply_modem_config(data, cfg, false);
 
-	/* Start RX — continuous or duty cycle */
+	/* Apply RX boost — persistent register, only written once.
+	 * Deferred from hw_init to here so radio is fully configured. */
+	if (data->rx_boost_enabled && !data->rx_boost_applied) {
+		lr11xx_radio_cfg_rx_boosted(ctx, true);
+		data->rx_boost_applied = true;
+	}
+
+	/* Start RX — continuous or duty cycle.
+	 * 0xFFFFFF is the magic RTC-step value for continuous RX.
+	 * Must use the raw RTC-step API — set_rx() converts from ms,
+	 * which overflows uint32_t and gives a ~131 s timeout instead. */
 	if (data->rx_duty_cycle_enabled) {
 		lr11xx_apply_rx_duty_cycle(data);
 	} else {
-		lr11xx_radio_set_rx(ctx, 0xFFFFFF);
+		lr11xx_radio_set_rx_with_timeout_in_rtc_step(ctx, 0xFFFFFF);
 	}
 
-	/* SetRxBoosted (0x0227) is a persistent config — apply once on
-	 * full start, survives subsequent SetRx calls. */
-	if (data->rx_boost_enabled) {
-		lr11xx_radio_cfg_rx_boosted(ctx, true);
-	}
+	/* LR1110 firmware sets CMD_ERROR IRQ flag on several write commands
+	 * (SetModParams, SetSyncWord, SetRxBoosted, SetRx) across all
+	 * tested FW versions (0x0307, 0x0401).  The commands succeed —
+	 * status byte returns OK, BUSY deasserts normally, radio operates
+	 * correctly.  RadioLib has the same behavior but never notices
+	 * because it doesn't read the IRQ register after write commands.
+	 * Clear here so CMD_ERROR doesn't leak into the DIO1 handler. */
+	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
 
 	data->in_rx_mode = true;
 	data->tx_active = false;
@@ -386,34 +409,19 @@ static void lr11xx_start_rx(struct lr11xx_data *data,
  * skip most of lr11xx_apply_modem_config.
  * Full lr11xx_start_rx() kept for initial start and TX→RX.
  *
- * Packet params (preamble, pld_len=255) MUST be re-set on every restart:
- * the LR1110 can silently corrupt these registers after CRC/header errors
- * and through CAD→RX transitions, causing missed packets — especially when
- * small and large packets are interleaved on the mesh.  Arduino MeshCore
- * applies the same workaround (CustomLR1110Wrapper::onSendFinished). */
+ * Packet params are NOT re-applied here — they persist through SetRx.
+ * RadioLib (Arduino) also skips re-applying packet params on RX restart.
+ * Only TX changes pld_len, and TX→RX goes through full start_rx(). */
 static void lr11xx_restart_rx(struct lr11xx_data *data)
 {
 	void *ctx = &data->hal_ctx;
-	struct lora_modem_config *mc = &data->modem_cfg;
 
 	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
-
-	/* Re-apply packet params — preamble + pld_len=255 for RX */
-	lr11xx_radio_pkt_params_lora_t pkt = {
-		.preamble_len_in_symb = mc->preamble_len,
-		.header_type = LR11XX_RADIO_LORA_PKT_EXPLICIT,
-		.pld_len_in_bytes = 255,
-		.crc = mc->packet_crc_disable ? LR11XX_RADIO_LORA_CRC_OFF
-					      : LR11XX_RADIO_LORA_CRC_ON,
-		.iq = mc->iq_inverted ? LR11XX_RADIO_LORA_IQ_INVERTED
-				      : LR11XX_RADIO_LORA_IQ_STANDARD,
-	};
-	lr11xx_radio_set_lora_pkt_params(ctx, &pkt);
 
 	if (data->rx_duty_cycle_enabled) {
 		lr11xx_apply_rx_duty_cycle(data);
 	} else {
-		lr11xx_radio_set_rx(ctx, 0xFFFFFF);
+		lr11xx_radio_set_rx_with_timeout_in_rtc_step(ctx, 0xFFFFFF);
 	}
 
 	/* RX boost persists through SetRx — no re-apply needed. */
@@ -433,11 +441,27 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 
 	k_mutex_lock(&data->spi_mutex, K_FOREVER);
 
+	/* Read IRQ status then clear ALL bits.  Must use ALL_MASK because
+	 * LR1110 triggers CMD_ERROR when ClearIrq is called with a mask
+	 * that does NOT include the CMD_ERROR bit (all FW versions).
+	 * By always clearing ALL, CMD_ERROR gets cleared as part of the
+	 * operation. */
 	lr11xx_system_irq_mask_t irq;
-	lr11xx_system_get_and_clear_irq_status(ctx, &irq);
+	lr11xx_system_get_irq_status(ctx, &irq);
+	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
 
 	LOG_INF("DIO1 IRQ: 0x%08x tx=%d t=%lld", irq, data->tx_active,
 		k_uptime_get());
+
+	/* CMD_ERROR (bit 22) is expected — LR1110 firmware sets it on
+	 * several write commands (SetModParams, SetSyncWord, SetRxBoosted,
+	 * SetRx) as a benign side effect on all FW versions (0x0307, 0x0401).
+	 * Commands succeed, radio operates correctly.  RadioLib has the same
+	 * behavior but never notices because it doesn't read IRQ after writes.
+	 * ERROR (bit 23) indicates an actual hardware fault. */
+	if (irq & LR11XX_SYSTEM_IRQ_ERROR) {
+		LOG_WRN("IRQ hardware ERROR: 0x%08x", irq);
+	}
 
 	/* ── RX done ── */
 	if (irq & LR11XX_SYSTEM_IRQ_RX_DONE) {
@@ -800,13 +824,27 @@ void lr11xx_set_rx_boost(const struct device *dev, bool enable)
 {
 	struct lr11xx_data *data = dev->data;
 
+	/* Skip if already in the desired state — SetRxBoosted is a
+	 * persistent register, redundant calls are wasteful. */
+	if (data->rx_boost_enabled == enable) {
+		return;
+	}
+
 	data->rx_boost_enabled = enable;
 	LOG_INF("RX boost %s", enable ? "enabled" : "disabled");
 
-	if (data->in_rx_mode) {
+	if (data->in_rx_mode && data->configured) {
+		/* Radio is fully configured — safe to apply immediately */
 		k_mutex_lock(&data->spi_mutex, K_FOREVER);
 		lr11xx_radio_cfg_rx_boosted(&data->hal_ctx, enable);
+		/* Clear spurious CMD_ERROR from SetRxBoosted (FW artifact) */
+		lr11xx_system_clear_irq_status(&data->hal_ctx,
+					       LR11XX_SYSTEM_IRQ_ALL_MASK);
+		data->rx_boost_applied = enable;
 		k_mutex_unlock(&data->spi_mutex);
+	} else {
+		/* Defer to next start_rx where radio will be configured */
+		data->rx_boost_applied = false;
 	}
 }
 
@@ -875,18 +913,39 @@ static int lr11xx_hw_init(struct lr11xx_data *data,
 	LOG_INF("RF switch: en=0x%02x rx=0x%02x tx=0x%02x txhp=0x%02x",
 		rfsw.enable, rfsw.rx, rfsw.tx, rfsw.tx_hp);
 
-	/* Calibrate */
+	/* Calibrate all 6 blocks (LF RC, HF RC, PLL, ADC, IMG, PLL TX).
+	 * LR11xx has 6 cal blocks (0x3F), not 7 like SX126x. */
 	lr11xx_system_calibrate(ctx, 0x3F);
 	LOG_INF("Calibration OK");
+
+	/* After RX/TX, fall back to STBY_RC (not FS).  Without this the
+	 * chip may linger in FS mode, affecting RX chain re-init. */
+	lr11xx_radio_set_rx_tx_fallback_mode(ctx, LR11XX_RADIO_FALLBACK_STDBY_RC);
 
 	/* LoRa mode */
 	lr11xx_radio_set_pkt_type(ctx, LR11XX_RADIO_PKT_TYPE_LORA);
 
+	/* Clear any errors accumulated during init (calibration, TCXO, etc.)
+	 * and any pending IRQ bits — otherwise CMD_ERROR (bit 22) will fire
+	 * DIO1 immediately after we enable it. */
+	uint16_t sys_errors = 0;
+	lr11xx_system_get_errors(ctx, &sys_errors);
+	if (sys_errors) {
+		LOG_WRN("System errors at init: 0x%04x — clearing", sys_errors);
+	}
+	lr11xx_system_clear_errors(ctx);
+	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
+
 	/* Enable DIO1 */
 	lr11xx_hal_enable_dio1_irq(&data->hal_ctx);
 
-	/* Set default boost from DTS */
+	/* Set default boost from DTS — actual hardware register write
+	 * is deferred to start_rx() where the radio is fully configured
+	 * (frequency, modulation, pkt params).  RadioLib/Arduino calls
+	 * SetRxBoosted after full configuration.  Calling it here (before
+	 * frequency is set) triggers CMD_ERROR on all LR1110 FW versions. */
 	data->rx_boost_enabled = cfg->rx_boosted;
+	data->rx_boost_applied = false;
 
 	data->hw_initialized = true;
 	LOG_INF("LR11xx driver ready");

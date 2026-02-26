@@ -149,6 +149,7 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	_batt_cb = nullptr;
 	_radio_reconfig_cb = nullptr;
 	_pin_change_cb = nullptr;
+	_save_schedule_cb = nullptr;
 	_contact_iter_active = false;
 	_contact_iter_idx = 0;
 	_contact_iter_lastmod = 0;
@@ -275,9 +276,33 @@ void CompanionMesh::markChannelsDirty()
 void CompanionMesh::flushDirtyContacts()
 {
 	if (_dirty_contacts_expiry) {
-		LOG_INF("flushDirtyContacts: saving contacts (lazy write)");
+		_dirty_contacts_expiry = 0;
+		if (_save_schedule_cb) {
+			/* Offload flash I/O to system workqueue — main thread
+			 * stays free to drain LoRa ring buffer / process BLE. */
+			LOG_INF("flushDirtyContacts: scheduling background save");
+			_save_schedule_cb();
+		} else {
+			/* No callback set — save synchronously (fallback) */
+			LOG_INF("flushDirtyContacts: saving contacts (sync)");
+			_store->saveContacts(this);
+		}
+	}
+}
+
+void CompanionMesh::flushAllSync()
+{
+	/* Synchronous flush for reboot path — MUST complete before sys_reboot.
+	 * Clears dirty flags so any pending background work is a no-op. */
+	if (_dirty_contacts_expiry) {
+		LOG_INF("flushAllSync: saving contacts");
 		_store->saveContacts(this);
 		_dirty_contacts_expiry = 0;
+	}
+	if (_dirty_channels_expiry) {
+		LOG_INF("flushAllSync: saving channels");
+		_store->saveChannels(this);
+		_dirty_channels_expiry = 0;
 	}
 }
 
@@ -1891,9 +1916,8 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	case CMD_REBOOT:
 		if (len >= 7 && memcmp(&data[1], "reboot", 6) == 0) {
 			LOG_INF("Reboot requested");
-			/* Flush any pending lazy writes before reboot */
-			flushDirtyContacts();
-			flushDirtyChannels();
+			/* Synchronous flush — must complete before reboot */
+			flushAllSync();
 			sendPacketOk();
 			sys_reboot(SYS_REBOOT_COLD);
 		} else {

@@ -544,7 +544,7 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 		if (_noise_floor < -120) _noise_floor = -120;
 		if (_noise_floor > -50) _noise_floor = -50;
 	}
-	LOG_INF("noise_floor_cal: %d samples/%d total, floor=%d, took %lld ms",
+	LOG_DBG("noise_floor_cal: %d samples/%d total, floor=%d, took %lld ms",
 		count, NUM_NOISE_FLOOR_SAMPLES, _noise_floor, elapsed);
 }
 

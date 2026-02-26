@@ -83,10 +83,12 @@ static struct k_event mesh_events;
 /* Work items for event-driven processing */
 static void rx_process_work_fn(struct k_work *work);
 static void contact_iter_work_fn(struct k_work *work);
+static void contact_save_work_fn(struct k_work *work);
 static void housekeeping_timer_fn(struct k_timer *timer);
 
 K_WORK_DEFINE(rx_process_work, rx_process_work_fn);
 K_WORK_DEFINE(contact_iter_work, contact_iter_work_fn);
+K_WORK_DEFINE(contact_save_work, contact_save_work_fn);
 
 /* Housekeeping timer for periodic tasks (noise floor calibration, etc.)
  * Fires every 5 seconds to wake event loop for maintenance without
@@ -365,6 +367,22 @@ static mesh::SimpleMeshTables mesh_tables;
 static mesh::StaticPoolPacketManager packet_mgr;
 static CompanionMesh companion_mesh(lora_radio, ms_clock, zephyr_rng, rtc_clock,
 	packet_mgr, mesh_tables, data_store);
+
+/* Contact save work — runs on system workqueue so the main mesh thread
+ * stays free to drain LoRa ring buffer and process BLE frames.
+ * Submitted from CompanionMesh::flushDirtyContacts() via callback. */
+static void contact_save_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (companion_mesh_ptr) {
+		data_store.saveContacts(companion_mesh_ptr);
+	}
+}
+
+static void schedule_contact_save(void)
+{
+	k_work_submit(&contact_save_work);
+}
 #endif
 
 /* GPS enable callback - logs state changes
@@ -554,6 +572,7 @@ int main(void)
 	companion_mesh.setPinChangeCallback([](uint32_t new_pin) {
 		zephcore_ble_set_passkey(new_pin);
 	});
+	companion_mesh.setSaveScheduleCallback(schedule_contact_save);
 	companion_mesh_ptr = &companion_mesh;
 
 	/* Set LoRa callbacks for event-driven packet processing */

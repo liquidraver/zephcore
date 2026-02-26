@@ -89,6 +89,9 @@ typedef void (*RadioReconfigureCallback)(void);
 /* Callback for BLE PIN change */
 typedef void (*PinChangeCallback)(uint32_t new_pin);
 
+/* Callback for scheduling background save (called instead of blocking) */
+typedef void (*SaveScheduleCallback)(void);
+
 /**
  * CompanionMesh: Application layer for ZephCore Companion device
  *
@@ -137,6 +140,19 @@ public:
 	 * Set callback for BLE PIN change.
 	 */
 	void setPinChangeCallback(PinChangeCallback cb) { _pin_change_cb = cb; }
+
+	/**
+	 * Set callback for scheduling background contact saves.
+	 * When set, flushDirtyContacts() submits a work item instead of blocking.
+	 */
+	void setSaveScheduleCallback(SaveScheduleCallback cb) { _save_schedule_cb = cb; }
+
+	/**
+	 * Synchronous flush — saves contacts + channels to flash on the calling
+	 * thread.  Use ONLY before reboot / factory reset where we MUST block
+	 * until the write completes.
+	 */
+	void flushAllSync();
 
 	/**
 	 * Continue contact iteration (call each main loop iteration).
@@ -237,6 +253,7 @@ private:
 	GetBatteryCallback _batt_cb;
 	RadioReconfigureCallback _radio_reconfig_cb;
 	PinChangeCallback _pin_change_cb;
+	SaveScheduleCallback _save_schedule_cb;
 
 	/* Contact iteration state */
 	bool _contact_iter_active;
