@@ -162,7 +162,6 @@ void Dispatcher::checkRecv()
 			break;  /* ring empty — done */
 		}
 
-		LOG_INF("checkRecv: got raw packet len=%d", len);
 		logRxRaw(_radio->getLastSNR(), _radio->getLastRSSI(), raw, len);
 
 		Packet *pkt = _mgr->allocNew();
@@ -174,7 +173,6 @@ void Dispatcher::checkRecv()
 		float score = 0.0f;
 		uint32_t air_time = 0;
 
-		LOG_INF("checkRecv: parsing packet");
 		int i = 0;
 		pkt->header = raw[i++];
 		if (pkt->hasTransportCodes()) {
@@ -205,24 +203,6 @@ void Dispatcher::checkRecv()
 		score = _radio->packetScore(_radio->getLastSNR(), len);
 		air_time = _radio->getEstAirtimeFor(len);
 		rx_air_time += air_time;
-		LOG_INF("checkRecv: header=0x%02x type=%d route=%s path_len=%d payload_len=%d",
-			pkt->header, pkt->getPayloadType(),
-			pkt->isRouteDirect() ? "direct" : "flood",
-			pkt->path_len, pkt->payload_len);
-		/* Log path hashes to identify forwarding nodes */
-		if (pkt->path_len > 0) {
-			LOG_INF("checkRecv: path[0]=0x%02x%s%s",
-				pkt->path[0],
-				pkt->path_len > 1 ? " path[1]=0x" : "",
-				pkt->path_len > 1 ? "" : "");
-			if (pkt->path_len > 1) {
-				LOG_INF("  path bytes: %02x %02x %02x %02x",
-					pkt->path[0],
-					pkt->path_len > 1 ? pkt->path[1] : 0,
-					pkt->path_len > 2 ? pkt->path[2] : 0,
-					pkt->path_len > 3 ? pkt->path[3] : 0);
-			}
-		}
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_PACKET_LOGGING)
 		/* Arduino-compatible packet logging - use printk to bypass log level filtering */
@@ -250,25 +230,20 @@ void Dispatcher::checkRecv()
 			}
 		}
 #endif
-		LOG_INF("checkRecv: processing packet");
 		logRx(pkt, pkt->getRawLength(), score);
 		if (pkt->isRouteFlood()) {
 			n_recv_flood++;
 			int delay = calcRxDelay(score, air_time);
 			if (delay < 50) {
-				LOG_INF("checkRecv: processing flood packet immediately");
 				processRecvPacket(pkt);
 			} else {
 				if (delay > (int)MAX_RX_DELAY_MILLIS) delay = MAX_RX_DELAY_MILLIS;
-				LOG_INF("checkRecv: queueing flood packet, delay=%d", delay);
 				_mgr->queueInbound(pkt, futureMillis(delay));
 			}
 		} else {
 			n_recv_direct++;
-			LOG_INF("checkRecv: processing direct packet");
 			processRecvPacket(pkt);
 		}
-		LOG_INF("checkRecv: done");
 	}
 }
 
@@ -306,7 +281,6 @@ void Dispatcher::checkSend()
 		}
 		if (cad_busy_start == 0) {
 			cad_busy_start = now;
-			LOG_INF("checkSend: channel busy, starting wait");
 		}
 		if (now - cad_busy_start > getCADFailMaxDuration()) {
 			_err_flags |= ERR_EVENT_CAD_TIMEOUT;
@@ -336,7 +310,6 @@ void Dispatcher::checkSend()
 			}
 			return;
 		}
-		LOG_INF("checkSend: got outbound type=%d payload_len=%d", outbound->getPayloadType(), outbound->payload_len);
 		uint8_t raw[MAX_TRANS_UNIT];
 		int len = 0;
 		raw[len++] = outbound->header;
@@ -382,7 +355,6 @@ void Dispatcher::checkSend()
 			 * logging can take 1-5 ms). */
 			if (_radio->isReceiving()) {
 				uint32_t retry = getCADFailRetryDelay();
-				LOG_INF("checkSend: channel busy at TX commit, re-queuing delay=%u", retry);
 				_mgr->queueOutbound(outbound, 0, futureMillis((int)retry));
 				outbound = nullptr;
 				if (_tx_queued_cb) {
@@ -391,7 +363,6 @@ void Dispatcher::checkSend()
 				return;
 			}
 
-			LOG_INF("checkSend: calling startSendRaw len=%d", len);
 			bool success = _radio->startSendRaw(raw, len);
 			if (!success) {
 				uint32_t retry = getCADFailRetryDelay();
@@ -403,7 +374,6 @@ void Dispatcher::checkSend()
 					_tx_queued_cb(retry, _tx_queued_user_data);
 				}
 			} else {
-				LOG_INF("checkSend: TX started, max_airtime=%u", max_airtime);
 				outbound_expiry = futureMillis((int)max_airtime);
 			}
 		}
@@ -429,15 +399,12 @@ void Dispatcher::releasePacket(Packet *packet)
 
 void Dispatcher::sendPacket(Packet *packet, uint8_t priority, uint32_t delay_millis)
 {
-	LOG_INF("sendPacket: type=%d payload_len=%d path_len=%d pri=%d delay=%u",
-		packet->getPayloadType(), packet->payload_len, packet->path_len, priority, delay_millis);
 	if (packet->path_len > MAX_PATH_SIZE || packet->payload_len > MAX_PACKET_PAYLOAD) {
 		LOG_WRN("sendPacket: rejected - path_len=%d or payload_len=%d too large",
 			packet->path_len, packet->payload_len);
 		_mgr->free(packet);
 	} else {
 		_mgr->queueOutbound(packet, priority, futureMillis((int)delay_millis));
-		LOG_INF("sendPacket: queued outbound count=%d", _mgr->getOutboundCount((uint32_t)_ms->getMillis()));
 		if (_tx_queued_cb && delay_millis > 0) {
 			_tx_queued_cb(delay_millis, _tx_queued_user_data);
 		}

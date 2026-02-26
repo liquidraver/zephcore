@@ -100,18 +100,12 @@ void Mesh::routeDirectRecvAcks(Packet *packet, uint32_t delay_millis)
 
 DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 {
-	LOG_INF("onRecvPacket: header=0x%02x type=%d route=%s path_len=%d payload[0]=0x%02x",
-		pkt->header, pkt->getPayloadType(),
-		pkt->isRouteDirect() ? "direct" : "flood",
-		pkt->path_len, pkt->payload_len > 0 ? pkt->payload[0] : 0);
-
 	if (pkt->getPayloadVer() > PAYLOAD_VER_1) {
 		return ACTION_RELEASE;
 	}
 
 	// Handle direct TRACE packets
 	if (pkt->isRouteDirect() && pkt->getPayloadType() == PAYLOAD_TYPE_TRACE) {
-		LOG_INF("TRACE packet received: path_len=%d payload_len=%d", pkt->path_len, pkt->payload_len);
 		if (pkt->path_len < MAX_PATH_SIZE) {
 			int i = 0;
 			uint32_t trace_tag;
@@ -123,9 +117,7 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 
 			uint8_t len = pkt->payload_len - i;
 			uint8_t offset = pkt->path_len << path_sz;
-			LOG_INF("TRACE: offset=%d len=%d path_sz=%d flags=0x%02x", offset, len, path_sz, flags);
 			if (offset >= len) {
-				LOG_INF("TRACE: calling onTraceRecv (reached end of path)");
 				onTraceRecv(pkt, trace_tag, auth_code, flags, pkt->path, &pkt->payload[i], len);
 			} else if (self_id.isHashMatch(&pkt->payload[i + offset], 1 << path_sz) && allowPacketForward(pkt) && !_tables->hasSeen(pkt)) {
 				pkt->path[pkt->path_len++] = (int8_t)(pkt->getSNR() * 4);
@@ -148,7 +140,6 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 	if (pkt->isRouteDirect() && pkt->path_len == 0 && pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
 		uint32_t ack_crc;
 		memcpy(&ack_crc, pkt->payload, 4);
-		LOG_INF("onRecvPacket: direct zero-hop ACK ack_crc=0x%08x", ack_crc);
 		onAckRecv(pkt, ack_crc);
 		return ACTION_RELEASE;
 	}
@@ -186,7 +177,6 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 	case PAYLOAD_TYPE_ACK: {
 		uint32_t ack_crc;
 		memcpy(&ack_crc, pkt->payload, 4);
-		LOG_INF("onRecvPacket: ACK packet ack_crc=0x%08x seen=%d", ack_crc, _tables->hasSeen(pkt) ? 1 : 0);
 		if (!_tables->hasSeen(pkt)) {
 			onAckRecv(pkt, ack_crc);
 			action = routeRecvPacket(pkt);
@@ -197,8 +187,6 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 	case PAYLOAD_TYPE_REQ:
 	case PAYLOAD_TYPE_RESPONSE:
 	case PAYLOAD_TYPE_TXT_MSG: {
-		LOG_INF("onRecvPacket: TXT_MSG/PATH/REQ/RESPONSE type=%d payload_len=%d",
-			pkt->getPayloadType(), pkt->payload_len);
 		int i = 0;
 		uint8_t dest_hash = pkt->payload[i++];
 		uint8_t src_hash = pkt->payload[i++];
@@ -207,11 +195,8 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 		if (i + CIPHER_MAC_SIZE >= (int)pkt->payload_len) {
 			LOG_WRN("onRecvPacket: incomplete packet (i=%d, payload_len=%d)", i, pkt->payload_len);
 		} else if (!_tables->hasSeen(pkt)) {
-			LOG_INF("onRecvPacket: checking dest_hash=0x%02x (self match=%d)",
-				dest_hash, self_id.isHashMatch(&dest_hash));
 			if (self_id.isHashMatch(&dest_hash)) {
 				int num = searchPeersByHash(&src_hash);
-				LOG_INF("onRecvPacket: found %d peers matching src_hash=0x%02x", num, src_hash);
 				bool found = false;
 				for (int j = 0; j < num; j++) {
 					uint8_t secret[PUB_KEY_SIZE];
@@ -219,7 +204,6 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 
 					uint8_t data[MAX_PACKET_PAYLOAD];
 					int len = Utils::MACThenDecrypt(secret, data, macAndData, pkt->payload_len - i);
-					LOG_INF("onRecvPacket: decrypt attempt j=%d, result len=%d", j, len);
 					if (len > 0) {
 						if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH) {
 							int k = 0;
@@ -235,7 +219,6 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 								}
 							}
 						} else {
-							LOG_INF("onRecvPacket: calling onPeerDataRecv type=%d len=%d", pkt->getPayloadType(), len);
 							onPeerDataRecv(pkt, pkt->getPayloadType(), j, secret, data, len);
 						}
 						found = true;
@@ -247,12 +230,8 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 				} else {
 					LOG_WRN("onRecvPacket: no peer could decrypt message");
 				}
-			} else {
-				LOG_INF("onRecvPacket: dest_hash doesn't match self");
 			}
 			action = routeRecvPacket(pkt);
-		} else {
-			LOG_INF("onRecvPacket: packet already seen");
 		}
 		break;
 	}
@@ -564,7 +543,6 @@ Packet *Mesh::createPathReturn(const uint8_t *dest_hash, const uint8_t *secret, 
 
 Packet *Mesh::createDatagram(uint8_t type, const Identity &dest, const uint8_t *secret, const uint8_t *data, size_t data_len)
 {
-	LOG_INF("createDatagram: type=%d data_len=%u", type, (unsigned)data_len);
 	if (type == PAYLOAD_TYPE_TXT_MSG || type == PAYLOAD_TYPE_REQ || type == PAYLOAD_TYPE_RESPONSE) {
 		if (data_len + CIPHER_MAC_SIZE + CIPHER_BLOCK_SIZE - 1 > MAX_PACKET_PAYLOAD) {
 			LOG_WRN("createDatagram: data too large");
@@ -586,11 +564,9 @@ Packet *Mesh::createDatagram(uint8_t type, const Identity &dest, const uint8_t *
 	int len = 0;
 	len += dest.copyHashTo(&packet->payload[len]);
 	len += self_id.copyHashTo(&packet->payload[len]);
-	LOG_INF("createDatagram: dest_hash=0x%02x src_hash=0x%02x", packet->payload[0], packet->payload[1]);
 	len += Utils::encryptThenMAC(secret, &packet->payload[len], data, data_len);
 
 	packet->payload_len = len;
-	LOG_INF("createDatagram: created packet payload_len=%d", len);
 	return packet;
 }
 

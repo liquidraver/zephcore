@@ -10,14 +10,15 @@
 
 namespace mesh {
 
-#define MAX_PACKET_HASHES  64
-#define MAX_PACKET_ACKS    32
+#define MAX_PACKET_HASHES  128
+#define MAX_PACKET_ACKS     64
 
 class SimpleMeshTables : public MeshTables {
 	uint8_t _hashes[MAX_PACKET_HASHES * MAX_HASH_SIZE];
 	int _next_idx;
 	uint32_t _acks[MAX_PACKET_ACKS];
 	int _next_ack_idx;
+	uint32_t _direct_dups, _flood_dups;
 
 public:
 	SimpleMeshTables() {
@@ -25,6 +26,7 @@ public:
 		_next_idx = 0;
 		memset(_acks, 0, sizeof(_acks));
 		_next_ack_idx = 0;
+		_direct_dups = _flood_dups = 0;
 	}
 
 	bool hasSeen(const Packet *packet) override {
@@ -32,7 +34,14 @@ public:
 			uint32_t ack;
 			memcpy(&ack, packet->payload, 4);
 			for (int i = 0; i < MAX_PACKET_ACKS; i++) {
-				if (ack == _acks[i]) return true;
+				if (ack == _acks[i]) {
+					if (packet->isRouteDirect()) {
+						_direct_dups++;
+					} else {
+						_flood_dups++;
+					}
+					return true;
+				}
 			}
 			_acks[_next_ack_idx] = ack;
 			_next_ack_idx = (_next_ack_idx + 1) % MAX_PACKET_ACKS;
@@ -43,7 +52,14 @@ public:
 		packet->calculatePacketHash(hash);
 		const uint8_t *sp = _hashes;
 		for (int i = 0; i < MAX_PACKET_HASHES; i++, sp += MAX_HASH_SIZE) {
-			if (memcmp(hash, sp, MAX_HASH_SIZE) == 0) return true;
+			if (memcmp(hash, sp, MAX_HASH_SIZE) == 0) {
+				if (packet->isRouteDirect()) {
+					_direct_dups++;
+				} else {
+					_flood_dups++;
+				}
+				return true;
+			}
 		}
 		memcpy(&_hashes[_next_idx * MAX_HASH_SIZE], hash, MAX_HASH_SIZE);
 		_next_idx = (_next_idx + 1) % MAX_PACKET_HASHES;
@@ -72,6 +88,11 @@ public:
 			}
 		}
 	}
+
+	uint32_t getNumDirectDups() const { return _direct_dups; }
+	uint32_t getNumFloodDups() const { return _flood_dups; }
+
+	void resetStats() { _direct_dups = _flood_dups = 0; }
 };
 
 } /* namespace mesh */

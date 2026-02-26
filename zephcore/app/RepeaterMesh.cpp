@@ -223,9 +223,8 @@ int RepeaterMesh::handleRequest(ClientInfo* sender, uint32_t sender_timestamp, u
         stats.n_recv_direct = getNumRecvDirect();
         stats.err_events = _err_flags;
         stats.last_snr = (int16_t)(radio_driver.getLastSNR() * 4);
-        /* Note: dup counters not implemented in Zephyr SimpleMeshTables */
-        stats.n_direct_dups = 0;
-        stats.n_flood_dups = 0;
+        stats.n_direct_dups = ((mesh::SimpleMeshTables *)getTables())->getNumDirectDups();
+        stats.n_flood_dups = ((mesh::SimpleMeshTables *)getTables())->getNumFloodDups();
         stats.total_rx_air_time_secs = getReceiveAirTime() / 1000;
         stats.n_recv_errors = radio_driver.getPacketsRecvErrors();
         memcpy(&reply_data[4], &stats, sizeof(stats));
@@ -398,22 +397,9 @@ mesh::Packet* RepeaterMesh::createSelfAdvert() {
 }
 
 bool RepeaterMesh::allowPacketForward(const mesh::Packet* packet) {
-    if (_prefs.disable_fwd) {
-        LOG_INF("allowPacketForward: BLOCKED - disable_fwd=1");
-        return false;
-    }
-    if (packet->isRouteFlood() && packet->path_len >= _prefs.flood_max) {
-        LOG_INF("allowPacketForward: BLOCKED - path_len=%d >= flood_max=%d",
-                packet->path_len, _prefs.flood_max);
-        return false;
-    }
-    if (packet->isRouteFlood() && recv_pkt_region == nullptr) {
-        LOG_INF("allowPacketForward: BLOCKED - recv_pkt_region=NULL (route_type=0x%02x)",
-                packet->getRouteType());
-        return false;
-    }
-    LOG_INF("allowPacketForward: ALLOWED (flood=%d path_len=%d)",
-            packet->isRouteFlood() ? 1 : 0, packet->path_len);
+    if (_prefs.disable_fwd) return false;
+    if (packet->isRouteFlood() && packet->path_len >= _prefs.flood_max) return false;
+    if (packet->isRouteFlood() && recv_pkt_region == nullptr) return false;
     return true;
 }
 
@@ -500,24 +486,16 @@ uint32_t RepeaterMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
 }
 
 bool RepeaterMesh::filterRecvFloodPacket(mesh::Packet* pkt) {
-    LOG_INF("filterRecvFloodPacket: route_type=0x%02x wildcard_flags=0x%02x",
-            pkt->getRouteType(), region_map.getWildcard().flags);
     if (pkt->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD) {
         recv_pkt_region = region_map.findMatch(pkt, REGION_DENY_FLOOD);
-        LOG_INF("filterRecvFloodPacket: TRANSPORT_FLOOD -> recv_pkt_region=%s",
-                recv_pkt_region ? recv_pkt_region->name : "NULL");
     } else if (pkt->getRouteType() == ROUTE_TYPE_FLOOD) {
         if (region_map.getWildcard().flags & REGION_DENY_FLOOD) {
             recv_pkt_region = nullptr;
-            LOG_INF("filterRecvFloodPacket: FLOOD denied by wildcard");
         } else {
             recv_pkt_region = &region_map.getWildcard();
-            LOG_INF("filterRecvFloodPacket: FLOOD -> wildcard region '%s'",
-                    recv_pkt_region->name);
         }
     } else {
         recv_pkt_region = nullptr;
-        LOG_INF("filterRecvFloodPacket: not a flood packet -> NULL");
     }
     return false;
 }
@@ -963,7 +941,7 @@ void RepeaterMesh::clearStats() {
     auto& radio_driver = getRadioDriver(_radio);
     radio_driver.resetStats();
     resetStats();
-    /* Note: SimpleMeshTables doesn't have resetStats in Zephyr version */
+    ((mesh::SimpleMeshTables *)getTables())->resetStats();
 }
 
 void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char* reply) {

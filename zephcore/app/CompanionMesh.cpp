@@ -149,7 +149,6 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	_batt_cb = nullptr;
 	_radio_reconfig_cb = nullptr;
 	_pin_change_cb = nullptr;
-	_save_schedule_cb = nullptr;
 	_contact_iter_active = false;
 	_contact_iter_idx = 0;
 	_contact_iter_lastmod = 0;
@@ -276,33 +275,9 @@ void CompanionMesh::markChannelsDirty()
 void CompanionMesh::flushDirtyContacts()
 {
 	if (_dirty_contacts_expiry) {
-		_dirty_contacts_expiry = 0;
-		if (_save_schedule_cb) {
-			/* Offload flash I/O to system workqueue — main thread
-			 * stays free to drain LoRa ring buffer / process BLE. */
-			LOG_INF("flushDirtyContacts: scheduling background save");
-			_save_schedule_cb();
-		} else {
-			/* No callback set — save synchronously (fallback) */
-			LOG_INF("flushDirtyContacts: saving contacts (sync)");
-			_store->saveContacts(this);
-		}
-	}
-}
-
-void CompanionMesh::flushAllSync()
-{
-	/* Synchronous flush for reboot path — MUST complete before sys_reboot.
-	 * Clears dirty flags so any pending background work is a no-op. */
-	if (_dirty_contacts_expiry) {
-		LOG_INF("flushAllSync: saving contacts");
+		LOG_INF("flushDirtyContacts: saving contacts (lazy write)");
 		_store->saveContacts(this);
 		_dirty_contacts_expiry = 0;
-	}
-	if (_dirty_channels_expiry) {
-		LOG_INF("flushAllSync: saving channels");
-		_store->saveChannels(this);
-		_dirty_channels_expiry = 0;
 	}
 }
 
@@ -569,30 +544,22 @@ ContactInfo *CompanionMesh::processAck(const uint8_t *data)
 {
 	uint32_t ack_crc;
 	memcpy(&ack_crc, data, 4);
-	LOG_INF("processAck: received ack_crc=0x%08x", ack_crc);
 
 	uint32_t sent_time = 0;
 	int contact_idx = findAndRemoveAck(ack_crc, &sent_time);
-	LOG_INF("processAck: findAndRemoveAck returned idx=%d sent_time=%u", contact_idx, sent_time);
 	if (contact_idx >= 0) {
 		ContactInfo ci;
 		if (getContactByIdx(contact_idx, ci)) {
-			LOG_INF("processAck: ACK matched contact '%s', sending push", ci.name);
-
-			// Send push notification in Arduino-compatible format:
-			// [PUSH_CODE_SEND_CONFIRMED] + [4-byte ack_crc] + [4-byte trip_time]
-			uint8_t ack_push[8];  // 4 bytes ack + 4 bytes trip_time
-			memcpy(ack_push, data, 4);  // ack_crc
+			uint8_t ack_push[8];
+			memcpy(ack_push, data, 4);
 			uint32_t now = (uint32_t)_ms->getMillis();
 			uint32_t trip_time = now - sent_time;
 			put_le32(&ack_push[4], trip_time);
-			LOG_INF("processAck: ack_push ack_crc=0x%08x trip_time=%u", ack_crc, trip_time);
 			sendPush(PUSH_CODE_SEND_CONFIRMED, ack_push, 8);
 
 			return lookupContactByPubKey(ci.id.pub_key, PUB_KEY_SIZE);
 		}
 	}
-	LOG_INF("processAck: no matching pending ACK, checking connections");
 	return checkConnectionsAck(data);
 }
 
@@ -1151,11 +1118,7 @@ bool CompanionMesh::isAutoAddEnabled() const
 
 bool CompanionMesh::shouldAutoAddContactType(uint8_t contact_type) const
 {
-	LOG_INF("shouldAutoAddContactType: type=%d manual_add=0x%02x autoadd_cfg=0x%02x",
-		contact_type, prefs.manual_add_contacts, prefs.autoadd_config);
-
 	if ((prefs.manual_add_contacts & 1) == 0) {
-		LOG_INF("shouldAutoAddContactType: returning true (manual mode OFF)");
 		return true;  // Auto-add all when not in manual mode
 	}
 
@@ -1174,12 +1137,9 @@ bool CompanionMesh::shouldAutoAddContactType(uint8_t contact_type) const
 		type_bit = AUTO_ADD_SENSOR;
 		break;
 	default:
-		LOG_INF("shouldAutoAddContactType: unknown type, returning false");
 		return false;
 	}
-	bool result = (prefs.autoadd_config & type_bit) != 0;
-	LOG_INF("shouldAutoAddContactType: type_bit=0x%02x result=%d", type_bit, result);
-	return result;
+	return (prefs.autoadd_config & type_bit) != 0;
 }
 
 bool CompanionMesh::shouldOverwriteWhenFull() const
@@ -1285,14 +1245,10 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			memcpy(&rsp[i], self_id.pub_key, PUB_KEY_SIZE); i += PUB_KEY_SIZE;
 			int32_t lat = (int32_t)(prefs.node_lat * 1000000.0);
 			int32_t lon = (int32_t)(prefs.node_lon * 1000000.0);
-			LOG_INF("SELF_INFO: lat=%d lon=%d advert_loc=%d multi_acks=%d",
-				lat, lon, prefs.advert_loc_policy, prefs.multi_acks);
 			put_le32(&rsp[i], lat); i += 4;
 			put_le32(&rsp[i], lon); i += 4;
 			rsp[i++] = prefs.multi_acks;
 			rsp[i++] = prefs.advert_loc_policy;
-			LOG_INF("SELF_INFO bytes[36-45]: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
-				rsp[36], rsp[37], rsp[38], rsp[39], rsp[40], rsp[41], rsp[42], rsp[43], rsp[44], rsp[45]);
 			// Telemetry modes: (env << 4) | (loc << 2) | base
 			rsp[i++] = (prefs.telemetry_mode_env << 4) | (prefs.telemetry_mode_loc << 2) | prefs.telemetry_mode_base;
 			rsp[i++] = prefs.manual_add_contacts;
@@ -1916,8 +1872,9 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	case CMD_REBOOT:
 		if (len >= 7 && memcmp(&data[1], "reboot", 6) == 0) {
 			LOG_INF("Reboot requested");
-			/* Synchronous flush — must complete before reboot */
-			flushAllSync();
+			/* Flush any pending lazy writes before reboot */
+			flushDirtyContacts();
+			flushDirtyChannels();
 			sendPacketOk();
 			sys_reboot(SYS_REBOOT_COLD);
 		} else {
