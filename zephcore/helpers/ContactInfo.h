@@ -8,12 +8,14 @@
 #include <mesh/Mesh.h>
 #include <mesh/MeshCore.h>
 
+#define OUT_PATH_UNKNOWN   0xFF
+
 struct ContactInfo {
 	mesh::Identity id;
 	char name[32];
 	uint8_t type;
 	uint8_t flags;
-	int8_t out_path_len;
+	uint8_t out_path_len;
 	mutable bool shared_secret_valid;
 	uint8_t out_path[MAX_PATH_SIZE];
 	uint32_t last_advert_timestamp;

@@ -71,6 +71,7 @@ LOG_MODULE_REGISTER(zephcore_companion, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #define CMD_SET_AUTOADD_CONFIG   0x3A
 #define CMD_GET_AUTOADD_CONFIG   0x3B
 #define CMD_GET_ALLOWED_REPEAT_FREQ 0x3C
+#define CMD_SET_PATH_HASH_MODE      0x3D
 
 /* Response packet types */
 #define PACKET_OK               0x00
@@ -191,24 +192,24 @@ bool CompanionMesh::allowPacketForward(const mesh::Packet *packet)
 void CompanionMesh::sendFloodScoped(const ContactInfo &recipient, mesh::Packet *pkt, uint32_t delay_millis)
 {
 	if (_send_scope.isNull()) {
-		sendFlood(pkt, delay_millis);
+		sendFlood(pkt, delay_millis, prefs.path_hash_mode + 1);
 	} else {
 		uint16_t codes[2];
 		codes[0] = _send_scope.calcTransportCode(pkt);
 		codes[1] = 0;
-		sendFlood(pkt, codes, delay_millis);
+		sendFlood(pkt, codes, delay_millis, prefs.path_hash_mode + 1);
 	}
 }
 
 void CompanionMesh::sendFloodScoped(const mesh::GroupChannel &channel, mesh::Packet *pkt, uint32_t delay_millis)
 {
 	if (_send_scope.isNull()) {
-		sendFlood(pkt, delay_millis);
+		sendFlood(pkt, delay_millis, prefs.path_hash_mode + 1);
 	} else {
 		uint16_t codes[2];
 		codes[0] = _send_scope.calcTransportCode(pkt);
 		codes[1] = 0;
-		sendFlood(pkt, codes, delay_millis);
+		sendFlood(pkt, codes, delay_millis, prefs.path_hash_mode + 1);
 	}
 }
 
@@ -329,7 +330,7 @@ size_t CompanionMesh::serializeContact(uint8_t *buf, const ContactInfo &c, uint8
 	memcpy(&buf[i], c.id.pub_key, PUB_KEY_SIZE); i += PUB_KEY_SIZE;
 	buf[i++] = c.type;
 	buf[i++] = c.flags;
-	buf[i++] = (c.out_path_len < 0) ? 0xFF : (uint8_t)c.out_path_len;
+	buf[i++] = c.out_path_len;
 	memcpy(&buf[i], c.out_path, MAX_PATH_SIZE); i += MAX_PATH_SIZE;
 	StrHelper::strzcpy((char *)&buf[i], c.name, 32); i += 32;
 	put_le32(&buf[i], c.last_advert_timestamp); i += 4;
@@ -517,15 +518,14 @@ void CompanionMesh::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8
 	markContactsDirty();
 
 	// Update advert path table
-	AdvertPath *ap = &_advert_paths[_next_advert_path_idx];
-	memcpy(ap->pubkey_prefix, contact.id.pub_key, 7);
-	ap->path_len = path_len;
-	if (path_len > 0 && path) {
-		memcpy(ap->path, path, (path_len < MAX_PATH_SIZE) ? path_len : MAX_PATH_SIZE);
+	if (path && mesh::Packet::isValidPathLen(path_len)) {
+		AdvertPath *ap = &_advert_paths[_next_advert_path_idx];
+		memcpy(ap->pubkey_prefix, contact.id.pub_key, 7);
+		memcpy(ap->name, contact.name, sizeof(ap->name));
+		ap->recv_timestamp = (uint32_t)getRTCClock()->getCurrentTime();
+		ap->path_len = mesh::Packet::copyPath(ap->path, path, path_len);
+		_next_advert_path_idx = (_next_advert_path_idx + 1) % ADVERT_PATH_TABLE_SIZE;
 	}
-	memcpy(ap->name, contact.name, sizeof(ap->name));
-	ap->recv_timestamp = (uint32_t)getRTCClock()->getCurrentTime();
-	_next_advert_path_idx = (_next_advert_path_idx + 1) % ADVERT_PATH_TABLE_SIZE;
 
 	// Send push notification
 	if (is_new) {
@@ -1090,13 +1090,13 @@ void CompanionMesh::onRawDataRecv(mesh::Packet *packet)
 /* Dispatcher tuning - hard-coded for companion repeat mode (matches Arduino) */
 uint32_t CompanionMesh::getRetransmitDelay(const mesh::Packet *packet)
 {
-	uint32_t t = (_radio->getEstAirtimeFor(packet->path_len + packet->payload_len + 2) * 0.5f);
+	uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * 0.5f);
 	return getRNG()->nextInt(0, 5 * t + 1);
 }
 
 uint32_t CompanionMesh::getDirectRetransmitDelay(const mesh::Packet *packet)
 {
-	uint32_t t = (_radio->getEstAirtimeFor(packet->path_len + packet->payload_len + 2) * 0.2f);
+	uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * 0.2f);
 	return getRNG()->nextInt(0, 5 * t + 1);
 }
 
@@ -1296,7 +1296,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			memcpy(c.id.pub_key, &data[i], PUB_KEY_SIZE); i += PUB_KEY_SIZE;
 			c.type = data[i++];
 			c.flags = data[i++];
-			c.out_path_len = (int8_t)data[i++];
+			c.out_path_len = data[i++];
 			memcpy(c.out_path, &data[i], MAX_PATH_SIZE); i += MAX_PATH_SIZE;
 			memcpy(c.name, &data[i], 32); i += 32;
 			c.last_advert_timestamp = get_le32(&data[i]); i += 4;
@@ -1664,7 +1664,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		if (adv) {
 			/* Optional param: data[1] == 1 means flood, else zero-hop */
 			if (len >= 2 && data[1] == 1) {
-				sendFlood(adv);
+				sendFlood(adv, (uint32_t)0, prefs.path_hash_mode + 1);
 			} else {
 				sendZeroHop(adv);
 			}
@@ -1814,9 +1814,9 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			static const uint8_t fw_build[12] = FIRMWARE_BUILD_DATE;
 			static const uint8_t model[40] = CONFIG_ZEPHCORE_BOARD_NAME;
 			static const uint8_t version[20] = "v1.13.0-zephyr";
-			uint8_t rsp[81];
+			uint8_t rsp[82];
 			rsp[0] = PACKET_DEVICE_INFO;
-			rsp[1] = 9;  // FIRMWARE_VER_CODE - v9 = client_repeat support
+			rsp[1] = 10;  // FIRMWARE_VER_CODE - v10 = path_hash_mode support
 			rsp[2] = (MAX_CONTACTS / 2 > 255) ? 255 : (MAX_CONTACTS / 2);  // protocol byte, app multiplies by 2
 			rsp[3] = MAX_GROUP_CHANNELS;
 			put_le32(&rsp[4], prefs.ble_pin ? prefs.ble_pin : 123456);  // BLE PIN
@@ -1824,6 +1824,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			memcpy(&rsp[20], model, 40);
 			memcpy(&rsp[60], version, 20);
 			rsp[80] = prefs.client_repeat;  // v9+: offgrid mode state
+			rsp[81] = prefs.path_hash_mode;  // v10+: path hash mode
 			writeFrame(rsp, sizeof(rsp));
 			return true;
 		}
@@ -2354,7 +2355,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 
 				// Temporarily force flood
 				auto save = contact->out_path_len;
-				contact->out_path_len = -1;
+				contact->out_path_len = OUT_PATH_UNKNOWN;
 				int result = sendRequest(*contact, req_data, sizeof(req_data), tag, est_timeout);
 				contact->out_path_len = save;
 
@@ -2389,8 +2390,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				rsp[i++] = PACKET_ADVERT_PATH;
 				put_le32(&rsp[i], ap->recv_timestamp); i += 4;
 				rsp[i++] = ap->path_len;
-				memcpy(&rsp[i], ap->path, ap->path_len);
-				i += ap->path_len;
+				i += mesh::Packet::writePath(&rsp[i], ap->path, ap->path_len);
 				writeFrame(rsp, i);
 			} else {
 				sendPacketError(ERR_NOT_FOUND);
@@ -2525,6 +2525,20 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		writeFrame(rsp, i);
 		return true;
 	}
+
+	case CMD_SET_PATH_HASH_MODE:
+		if (len >= 3 && data[1] == 0) {
+			if (data[2] >= 3) {
+				sendPacketError(ERR_ILLEGAL_ARG);
+			} else {
+				prefs.path_hash_mode = data[2];
+				_store->savePrefs(prefs);
+				sendPacketOk();
+			}
+		} else {
+			sendPacketError(ERR_ILLEGAL_ARG);
+		}
+		return true;
 
 	case CMD_SEND_ANON_REQ:
 		if (len >= 1 + PUB_KEY_SIZE + 1) {

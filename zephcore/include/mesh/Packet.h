@@ -46,7 +46,8 @@ public:
 	Packet();
 
 	uint8_t header;
-	uint16_t payload_len, path_len;
+	uint16_t payload_len;
+	uint8_t path_len;
 	uint16_t transport_codes[2];
 	uint8_t path[MAX_PATH_SIZE];
 	uint8_t payload[MAX_PACKET_PAYLOAD];
@@ -59,6 +60,17 @@ public:
 	bool hasTransportCodes() const { return getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD || getRouteType() == ROUTE_TYPE_TRANSPORT_DIRECT; }
 	uint8_t getPayloadType() const { return (header >> PH_TYPE_SHIFT) & PH_TYPE_MASK; }
 	uint8_t getPayloadVer() const { return (header >> PH_VER_SHIFT) & PH_VER_MASK; }
+
+	uint8_t getPathHashSize() const { return (path_len >> 6) + 1; }
+	uint8_t getPathHashCount() const { return path_len & 63; }
+	uint8_t getPathByteLen() const { return getPathHashCount() * getPathHashSize(); }
+	void setPathHashCount(uint8_t n) { path_len &= ~63; path_len |= n; }
+	void setPathHashSizeAndCount(uint8_t sz, uint8_t n) { path_len = ((sz - 1) << 6) | (n & 63); }
+
+	static uint8_t copyPath(uint8_t *dest, const uint8_t *src, uint8_t path_len);
+	static size_t writePath(uint8_t *dest, const uint8_t *src, uint8_t path_len);
+	static bool isValidPathLen(uint8_t path_len);
+
 	void markDoNotRetransmit() { header = 0xFF; }
 	bool isMarkedDoNotRetransmit() const { return header == 0xFF; }
 	float getSNR() const { return ((float)_snr) / 4.0f; }

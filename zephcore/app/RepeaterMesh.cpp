@@ -142,7 +142,7 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
     }
 
     if (is_flood) {
-        client->out_path_len = -1;
+        client->out_path_len = OUT_PATH_UNKNOWN;
     }
 
     uint32_t now = getRTCClock()->getCurrentTimeUnique();
@@ -159,8 +159,8 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
 
 uint8_t RepeaterMesh::handleAnonRegionsReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data) {
     if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
-        reply_path_len = *data++ & 0x3F;
-        memcpy(reply_path, data, reply_path_len);
+        reply_path_len = *data++;
+        mesh::Packet::copyPath(reply_path, data, reply_path_len);
 
         memcpy(reply_data, &sender_timestamp, 4);
         uint32_t now = getRTCClock()->getCurrentTime();
@@ -173,8 +173,8 @@ uint8_t RepeaterMesh::handleAnonRegionsReq(const mesh::Identity& sender, uint32_
 
 uint8_t RepeaterMesh::handleAnonOwnerReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data) {
     if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
-        reply_path_len = *data++ & 0x3F;
-        memcpy(reply_path, data, reply_path_len);
+        reply_path_len = *data++;
+        mesh::Packet::copyPath(reply_path, data, reply_path_len);
 
         memcpy(reply_data, &sender_timestamp, 4);
         uint32_t now = getRTCClock()->getCurrentTime();
@@ -188,8 +188,8 @@ uint8_t RepeaterMesh::handleAnonOwnerReq(const mesh::Identity& sender, uint32_t 
 
 uint8_t RepeaterMesh::handleAnonClockReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data) {
     if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
-        reply_path_len = *data++ & 0x3F;
-        memcpy(reply_path, data, reply_path_len);
+        reply_path_len = *data++;
+        mesh::Packet::copyPath(reply_path, data, reply_path_len);
 
         memcpy(reply_data, &sender_timestamp, 4);
         uint32_t now = getRTCClock()->getCurrentTime();
@@ -398,7 +398,7 @@ mesh::Packet* RepeaterMesh::createSelfAdvert() {
 
 bool RepeaterMesh::allowPacketForward(const mesh::Packet* packet) {
     if (_prefs.disable_fwd) return false;
-    if (packet->isRouteFlood() && packet->path_len >= _prefs.flood_max) return false;
+    if (packet->isRouteFlood() && packet->getPathHashCount() >= _prefs.flood_max) return false;
     if (packet->isRouteFlood() && recv_pkt_region == nullptr) return false;
     return true;
 }
@@ -476,12 +476,12 @@ int RepeaterMesh::calcRxDelay(float score, uint32_t air_time) const {
 }
 
 uint32_t RepeaterMesh::getRetransmitDelay(const mesh::Packet* packet) {
-    uint32_t t = (_radio->getEstAirtimeFor(packet->path_len + packet->payload_len + 2) * _prefs.tx_delay_factor);
+    uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * _prefs.tx_delay_factor);
     return getRNG()->nextInt(0, 3 * t + 1);
 }
 
 uint32_t RepeaterMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
-    uint32_t t = (_radio->getEstAirtimeFor(packet->path_len + packet->payload_len + 2) * _prefs.direct_tx_delay_factor);
+    uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * _prefs.direct_tx_delay_factor);
     return getRNG()->nextInt(0, 3 * t + 1);
 }
 
@@ -508,7 +508,7 @@ void RepeaterMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, c
         data[len] = 0;
         uint8_t reply_len;
 
-        reply_path_len = -1;
+        reply_path_len = OUT_PATH_UNKNOWN;
         if (data[4] == 0 || data[4] >= ' ') {
             reply_len = handleLoginReq(sender, secret, timestamp, &data[4], packet->isRouteFlood());
         } else if (data[4] == ANON_REQ_TYPE_REGIONS && packet->isRouteDirect()) {
@@ -526,10 +526,10 @@ void RepeaterMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, c
         if (packet->isRouteFlood()) {
             mesh::Packet* path = createPathReturn(sender, secret, packet->path, packet->path_len,
                                                   PAYLOAD_TYPE_RESPONSE, reply_data, reply_len);
-            if (path) sendFlood(path, SERVER_RESPONSE_DELAY);
-        } else if (reply_path_len < 0) {
+            if (path) sendFlood(path, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
+        } else if (reply_path_len == OUT_PATH_UNKNOWN) {
             mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, sender, secret, reply_data, reply_len);
-            if (reply) sendFlood(reply, SERVER_RESPONSE_DELAY);
+            if (reply) sendFlood(reply, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
         } else {
             mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, sender, secret, reply_data, reply_len);
             if (reply) sendDirect(reply, reply_path, reply_path_len, SERVER_RESPONSE_DELAY);
@@ -565,7 +565,7 @@ void RepeaterMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, 
                                 const uint8_t* app_data, size_t app_data_len) {
     mesh::Mesh::onAdvertRecv(packet, id, timestamp, app_data, app_data_len);
 
-    if (packet->path_len == 0 && !isShare(packet)) {
+    if (packet->getPathHashCount() == 0 && !isShare(packet)) {
         AdvertDataParser parser(app_data, app_data_len);
         if (parser.isValid() && parser.getType() == ADV_TYPE_REPEATER) {
             putNeighbour(id, timestamp, packet->getSNR());
@@ -596,14 +596,14 @@ void RepeaterMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
             if (packet->isRouteFlood()) {
                 mesh::Packet* path = createPathReturn(client->id, secret, packet->path, packet->path_len,
                                                       PAYLOAD_TYPE_RESPONSE, reply_data, reply_len);
-                if (path) sendFlood(path, SERVER_RESPONSE_DELAY);
+                if (path) sendFlood(path, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
             } else {
                 mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, client->id, secret, reply_data, reply_len);
                 if (reply) {
-                    if (client->out_path_len >= 0) {
+                    if (client->out_path_len != OUT_PATH_UNKNOWN) {
                         sendDirect(reply, client->out_path, client->out_path_len, SERVER_RESPONSE_DELAY);
                     } else {
-                        sendFlood(reply, SERVER_RESPONSE_DELAY);
+                        sendFlood(reply, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
                     }
                 }
             }
@@ -630,8 +630,8 @@ void RepeaterMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
                                    client->id.pub_key, PUB_KEY_SIZE);
                 mesh::Packet* ack = createAck(ack_hash);
                 if (ack) {
-                    if (client->out_path_len < 0) {
-                        sendFlood(ack, TXT_ACK_DELAY);
+                    if (client->out_path_len == OUT_PATH_UNKNOWN) {
+                        sendFlood(ack, TXT_ACK_DELAY, packet->getPathHashSize());
                     } else {
                         sendDirect(ack, client->out_path, client->out_path_len, TXT_ACK_DELAY);
                     }
@@ -656,8 +656,8 @@ void RepeaterMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
 
                 auto reply_pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, secret, temp, 5 + text_len);
                 if (reply_pkt) {
-                    if (client->out_path_len < 0) {
-                        sendFlood(reply_pkt, CLI_REPLY_DELAY_MILLIS);
+                    if (client->out_path_len == OUT_PATH_UNKNOWN) {
+                        sendFlood(reply_pkt, CLI_REPLY_DELAY_MILLIS, packet->getPathHashSize());
                     } else {
                         sendDirect(reply_pkt, client->out_path, client->out_path_len, CLI_REPLY_DELAY_MILLIS);
                     }
@@ -676,7 +676,7 @@ bool RepeaterMesh::onPeerPathRecv(mesh::Packet* packet, int sender_idx, const ui
     if (i >= 0 && i < acl.getNumClients()) {
         LOG_DBG("PATH to client, path_len=%d", path_len);
         auto client = acl.getClientByIdx(i);
-        memcpy(client->out_path, path, client->out_path_len = path_len);
+        client->out_path_len = mesh::Packet::copyPath(client->out_path, path, path_len);
         client->last_activity = getRTCClock()->getCurrentTime();
     }
     return false;
@@ -829,7 +829,7 @@ void RepeaterMesh::sendSelfAdvertisement(int delay_millis, bool flood) {
     mesh::Packet* pkt = createSelfAdvert();
     if (pkt) {
         if (flood) {
-            sendFlood(pkt, delay_millis);
+            sendFlood(pkt, delay_millis, _prefs.path_hash_mode + 1);
         } else {
             sendZeroHop(pkt, delay_millis);
         }
@@ -1155,7 +1155,7 @@ void RepeaterMesh::loop() {
 
     if (next_flood_advert && millisHasNowPassed(next_flood_advert)) {
         mesh::Packet* pkt = createSelfAdvert();
-        if (pkt) sendFlood(pkt);
+        if (pkt) sendFlood(pkt, (uint32_t)0, _prefs.path_hash_mode + 1);
         updateFloodAdvertTimer();
         updateAdvertTimer();
     } else if (next_local_advert && millisHasNowPassed(next_local_advert)) {

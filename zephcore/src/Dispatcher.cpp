@@ -116,7 +116,7 @@ void Dispatcher::loop()
 			total_air_time += t;
 			_duty_cycle.recordTx(t, (uint32_t)_ms->getMillis());
 			_radio->onSendFinished();
-			logTx(outbound, 2 + outbound->path_len + outbound->payload_len);
+			logTx(outbound, 2 + outbound->getPathByteLen() + outbound->payload_len);
 			if (outbound->isRouteFlood()) {
 				n_sent_flood++;
 			} else {
@@ -126,7 +126,7 @@ void Dispatcher::loop()
 			outbound = nullptr;
 		} else if (millisHasNowPassed(outbound_expiry)) {
 			_radio->onSendFinished();
-			logTxFail(outbound, 2 + outbound->path_len + outbound->payload_len);
+			logTxFail(outbound, 2 + outbound->getPathByteLen() + outbound->payload_len);
 			releasePacket(outbound);
 			outbound = nullptr;
 		} else {
@@ -148,6 +148,48 @@ void Dispatcher::loop()
 	}
 	checkRecv();
 	checkSend();
+}
+
+bool Dispatcher::tryParsePacket(Packet *pkt, const uint8_t *raw, int len)
+{
+	int i = 0;
+
+	pkt->header = raw[i++];
+	if (pkt->getPayloadVer() > PAYLOAD_VER_1) {
+		LOG_WRN("tryParsePacket: unsupported packet version");
+		return false;
+	}
+
+	if (pkt->hasTransportCodes()) {
+		memcpy(&pkt->transport_codes[0], &raw[i], 2); i += 2;
+		memcpy(&pkt->transport_codes[1], &raw[i], 2); i += 2;
+	} else {
+		pkt->transport_codes[0] = pkt->transport_codes[1] = 0;
+	}
+
+	pkt->path_len = raw[i++];
+	uint8_t path_mode = pkt->path_len >> 6;
+	if (path_mode == 3) {   // Reserved for future
+		LOG_WRN("tryParsePacket: unsupported path mode: 3");
+		return false;
+	}
+
+	uint8_t path_byte_len = (pkt->path_len & 63) * pkt->getPathHashSize();
+	if (path_byte_len > MAX_PATH_SIZE || i + path_byte_len > len) {
+		LOG_WRN("tryParsePacket: partial or corrupt packet, len=%d", len);
+		return false;
+	}
+
+	memcpy(pkt->path, &raw[i], path_byte_len); i += path_byte_len;
+
+	pkt->payload_len = len - i;
+	if (pkt->payload_len > (int)sizeof(pkt->payload)) {
+		LOG_WRN("tryParsePacket: payload too big, payload_len=%d", (uint32_t)pkt->payload_len);
+		return false;
+	}
+
+	memcpy(pkt->payload, &raw[i], pkt->payload_len);
+	return true;
 }
 
 void Dispatcher::checkRecv()
@@ -173,36 +215,15 @@ void Dispatcher::checkRecv()
 		float score = 0.0f;
 		uint32_t air_time = 0;
 
-		int i = 0;
-		pkt->header = raw[i++];
-		if (pkt->hasTransportCodes()) {
-			memcpy(&pkt->transport_codes[0], &raw[i], 2); i += 2;
-			memcpy(&pkt->transport_codes[1], &raw[i], 2); i += 2;
+		if (tryParsePacket(pkt, raw, len)) {
+			pkt->_snr = (int8_t)(_radio->getLastSNR() * 4.0f);
+			score = _radio->packetScore(_radio->getLastSNR(), len);
+			air_time = _radio->getEstAirtimeFor(len);
+			rx_air_time += air_time;
 		} else {
-			pkt->transport_codes[0] = pkt->transport_codes[1] = 0;
-		}
-		pkt->path_len = raw[i++];
-
-		if (pkt->path_len > MAX_PATH_SIZE || i + pkt->path_len > len) {
-			LOG_WRN("checkRecv: bad path_len=%d", pkt->path_len);
 			_mgr->free(pkt);
 			continue;
 		}
-
-		memcpy(pkt->path, &raw[i], pkt->path_len);
-		i += pkt->path_len;
-		pkt->payload_len = len - i;
-		if (pkt->payload_len > (int)sizeof(pkt->payload)) {
-			LOG_WRN("checkRecv: payload too large %d", pkt->payload_len);
-			_mgr->free(pkt);
-			continue;
-		}
-
-		memcpy(pkt->payload, &raw[i], pkt->payload_len);
-		pkt->_snr = (int8_t)(_radio->getLastSNR() * 4.0f);
-		score = _radio->packetScore(_radio->getLastSNR(), len);
-		air_time = _radio->getEstAirtimeFor(len);
-		rx_air_time += air_time;
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_PACKET_LOGGING)
 		/* Arduino-compatible packet logging - use printk to bypass log level filtering */
@@ -318,8 +339,7 @@ void Dispatcher::checkSend()
 			memcpy(&raw[len], &outbound->transport_codes[1], 2); len += 2;
 		}
 		raw[len++] = outbound->path_len;
-		memcpy(&raw[len], outbound->path, outbound->path_len);
-		len += outbound->path_len;
+		len += Packet::writePath(&raw[len], outbound->path, outbound->path_len);
 
 		if (len + outbound->payload_len > MAX_TRANS_UNIT) {
 			LOG_WRN("checkSend: packet too large len=%d+%d > %d", len, outbound->payload_len, MAX_TRANS_UNIT);
@@ -399,8 +419,8 @@ void Dispatcher::releasePacket(Packet *packet)
 
 void Dispatcher::sendPacket(Packet *packet, uint8_t priority, uint32_t delay_millis)
 {
-	if (packet->path_len > MAX_PATH_SIZE || packet->payload_len > MAX_PACKET_PAYLOAD) {
-		LOG_WRN("sendPacket: rejected - path_len=%d or payload_len=%d too large",
+	if (!Packet::isValidPathLen(packet->path_len) || packet->payload_len > MAX_PACKET_PAYLOAD) {
+		LOG_WRN("sendPacket: rejected - path_len=%d or payload_len=%d invalid",
 			packet->path_len, packet->payload_len);
 		_mgr->free(packet);
 	} else {

@@ -4,6 +4,7 @@ build/
 build-*/
 **/build/
 **/build-*/
+**/build_*/
 /twister-out*/
 
 # West workspace (recreated by west init/update)
@@ -41,6 +42,7 @@ rtt_*.log
 *.obj
 *.o
 *.a
+*.zip
 
 # OS junk
 .DS_Store

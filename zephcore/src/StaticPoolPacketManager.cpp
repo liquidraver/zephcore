@@ -28,7 +28,7 @@ struct PacketQueue {
 	int countBefore(uint32_t now) const {
 		int n = 0;
 		for (int j = 0; j < _num; j++) {
-			if (_schedule_table[j] > now) continue;
+			if ((int32_t)(_schedule_table[j] - now) > 0) continue;
 			n++;
 		}
 		return n;
@@ -38,7 +38,7 @@ struct PacketQueue {
 		uint8_t min_pri = 0xFF;
 		int best_idx = -1;
 		for (int j = 0; j < _num; j++) {
-			if (_schedule_table[j] > now) continue;
+			if ((int32_t)(_schedule_table[j] - now) > 0) continue;
 			if (_pri_table[j] < min_pri) {
 				min_pri = _pri_table[j];
 				best_idx = j;

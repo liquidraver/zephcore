@@ -68,6 +68,7 @@ struct NodePrefs {
 	uint8_t buzzer_quiet;
 	uint8_t autoadd_config;
 	uint8_t client_repeat;          // 1 = offgrid mode (forward packets), 0 = companion only
+	uint8_t path_hash_mode;         // which path mode to use when sending (0-2)
 };
 
 /* Default prefs — MUST match LoRaConfig.h defaults for radio interop.

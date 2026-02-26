@@ -396,7 +396,8 @@ void ZephyrDataStore::loadPrefs(NodePrefs &prefs)
 	off += 4;
 	prefs.advert_loc_policy = buf[off++];
 	prefs.multi_acks = buf[off++];
-	off += 2;
+	prefs.path_hash_mode = buf[off++];
+	off += 1;
 	memcpy(&prefs.ble_pin, &buf[off], sizeof(uint32_t));
 	off += 4;
 	prefs.buzzer_quiet = buf[off++];
@@ -456,8 +457,8 @@ void ZephyrDataStore::savePrefs(const NodePrefs &prefs)
 	off += 4;
 	buf[off++] = prefs.advert_loc_policy;
 	buf[off++] = prefs.multi_acks;
-	memcpy(&buf[off], pad, 2);
-	off += 2;
+	buf[off++] = prefs.path_hash_mode;
+	buf[off++] = 0;  // pad
 	memcpy(&buf[off], &prefs.ble_pin, sizeof(uint32_t));
 	off += 4;
 	buf[off++] = prefs.buzzer_quiet;

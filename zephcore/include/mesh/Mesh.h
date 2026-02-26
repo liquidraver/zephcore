@@ -76,8 +76,8 @@ public:
 	Packet *createRawData(const uint8_t *data, size_t len);
 	Packet *createTrace(uint32_t tag, uint32_t auth_code, uint8_t flags = 0);
 
-	void sendFlood(Packet *packet, uint32_t delay_millis = 0);
-	void sendFlood(Packet *packet, uint16_t *transport_codes, uint32_t delay_millis = 0);
+	void sendFlood(Packet *packet, uint32_t delay_millis = 0, uint8_t path_hash_size = 1);
+	void sendFlood(Packet *packet, uint16_t *transport_codes, uint32_t delay_millis = 0, uint8_t path_hash_size = 1);
 	void sendDirect(Packet *packet, const uint8_t *path, uint8_t path_len, uint32_t delay_millis = 0);
 	void sendZeroHop(Packet *packet, uint32_t delay_millis = 0);
 	void sendZeroHop(Packet *packet, uint16_t *transport_codes, uint32_t delay_millis = 0);

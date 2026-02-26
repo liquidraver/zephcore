@@ -79,7 +79,8 @@ void CommonCLI::loadPrefs(const char* path) {
     fs_read(&file, &_prefs->multi_acks, sizeof(_prefs->multi_acks));           // 115
     fs_read(&file, &_prefs->bw, sizeof(_prefs->bw));                           // 116
     fs_read(&file, &_prefs->agc_reset_interval, sizeof(_prefs->agc_reset_interval)); // 120
-    fs_read(&file, pad, 3);                                                     // 121
+    fs_read(&file, &_prefs->path_hash_mode, sizeof(_prefs->path_hash_mode));    // 121
+    fs_read(&file, pad, 2);                                                     // 122
     fs_read(&file, &_prefs->flood_max, sizeof(_prefs->flood_max));             // 124
     fs_read(&file, &_prefs->flood_advert_interval, sizeof(_prefs->flood_advert_interval)); // 125
     fs_read(&file, &_prefs->interference_threshold, sizeof(_prefs->interference_threshold)); // 126
@@ -123,6 +124,7 @@ void CommonCLI::loadPrefs(const char* path) {
 #endif
     _prefs->multi_acks = constrain(_prefs->multi_acks, (uint8_t)0, (uint8_t)1);
     _prefs->adc_multiplier = constrain(_prefs->adc_multiplier, 0.0f, 10.0f);
+    _prefs->path_hash_mode = constrain(_prefs->path_hash_mode, (uint8_t)0, (uint8_t)2);
     _prefs->powersaving_enabled = constrain(_prefs->powersaving_enabled, (uint8_t)0, (uint8_t)1);
     _prefs->gps_enabled = constrain(_prefs->gps_enabled, (uint8_t)0, (uint8_t)1);
     _prefs->advert_loc_policy = constrain(_prefs->advert_loc_policy, (uint8_t)0, (uint8_t)2);
@@ -169,7 +171,8 @@ void CommonCLI::savePrefs(const char* path) {
     fs_write(&file, &_prefs->multi_acks, sizeof(_prefs->multi_acks));
     fs_write(&file, &_prefs->bw, sizeof(_prefs->bw));
     fs_write(&file, &_prefs->agc_reset_interval, sizeof(_prefs->agc_reset_interval));
-    fs_write(&file, pad, 3);
+    fs_write(&file, &_prefs->path_hash_mode, sizeof(_prefs->path_hash_mode));
+    fs_write(&file, pad, 2);
     fs_write(&file, &_prefs->flood_max, sizeof(_prefs->flood_max));
     fs_write(&file, &_prefs->flood_advert_interval, sizeof(_prefs->flood_advert_interval));
     fs_write(&file, &_prefs->interference_threshold, sizeof(_prefs->interference_threshold));
@@ -403,6 +406,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 sp++;
             }
             *reply = 0;
+        } else if (memcmp(config, "path.hash.mode", 14) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %d", (uint32_t)_prefs->path_hash_mode);
         } else if (memcmp(config, "tx", 2) == 0 && (config[2] == 0 || config[2] == ' ')) {
             snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->tx_power_dbm);
         } else if (memcmp(config, "freq", 4) == 0) {
@@ -581,6 +586,16 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             *dp = 0;
             savePrefs();
             strcpy(reply, "OK");
+        } else if (memcmp(config, "path.hash.mode ", 15) == 0) {
+            config += 15;
+            uint8_t mode = atoi(config);
+            if (mode < 3) {
+                _prefs->path_hash_mode = mode;
+                savePrefs();
+                strcpy(reply, "OK");
+            } else {
+                strcpy(reply, "Error, must be 0,1, or 2");
+            }
         } else if (memcmp(config, "tx ", 3) == 0) {
             int val = atoi(&config[3]);
 #ifdef CONFIG_ZEPHCORE_MAX_TX_POWER_DBM

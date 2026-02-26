@@ -16,9 +16,35 @@ Packet::Packet()
 	payload_len = 0;
 }
 
+bool Packet::isValidPathLen(uint8_t path_len)
+{
+	uint8_t hash_count = path_len & 63;
+	uint8_t hash_size = (path_len >> 6) + 1;
+	if (hash_size == 4) return false;  // Reserved for future
+	return hash_count * hash_size <= MAX_PATH_SIZE;
+}
+
+size_t Packet::writePath(uint8_t *dest, const uint8_t *src, uint8_t path_len)
+{
+	uint8_t hash_count = path_len & 63;
+	uint8_t hash_size = (path_len >> 6) + 1;
+	size_t len = hash_count * hash_size;
+	if (len > MAX_PATH_SIZE) {
+		return 0;   // Error
+	}
+	memcpy(dest, src, len);
+	return len;
+}
+
+uint8_t Packet::copyPath(uint8_t *dest, const uint8_t *src, uint8_t path_len)
+{
+	writePath(dest, src, path_len);
+	return path_len;
+}
+
 int Packet::getRawLength() const
 {
-	return 2 + path_len + payload_len + (hasTransportCodes() ? 4 : 0);
+	return 2 + getPathByteLen() + payload_len + (hasTransportCodes() ? 4 : 0);
 }
 
 void Packet::calculatePacketHash(uint8_t *hash) const
@@ -47,7 +73,7 @@ uint8_t Packet::writeTo(uint8_t dest[]) const
 		memcpy(&dest[i], &transport_codes[1], 2); i += 2;
 	}
 	dest[i++] = path_len;
-	memcpy(&dest[i], path, path_len); i += path_len;
+	i += writePath(&dest[i], path, path_len);
 	memcpy(&dest[i], payload, payload_len); i += payload_len;
 	return i;
 }
@@ -63,8 +89,10 @@ bool Packet::readFrom(const uint8_t src[], uint8_t len)
 		transport_codes[0] = transport_codes[1] = 0;
 	}
 	path_len = src[i++];
-	if (path_len > sizeof(path)) return false;
-	memcpy(path, &src[i], path_len); i += path_len;
+	if (!isValidPathLen(path_len)) return false;
+
+	uint8_t bl = getPathByteLen();
+	memcpy(path, &src[i], bl); i += bl;
 	if (i >= len) return false;
 	payload_len = len - i;
 	if (payload_len > sizeof(payload)) return false;
