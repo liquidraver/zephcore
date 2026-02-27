@@ -414,6 +414,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 						dio1_work);
 	const struct lr11xx_config *cfg = data->dev->config;
 	void *ctx = &data->hal_ctx;
+	bool rx_restarted = false;
 
 	k_mutex_lock(&data->spi_mutex, K_FOREVER);
 
@@ -422,9 +423,14 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 	 * that does NOT include the CMD_ERROR bit (all FW versions).
 	 * By always clearing ALL, CMD_ERROR gets cleared as part of the
 	 * operation. */
-	lr11xx_system_irq_mask_t irq;
-	lr11xx_system_get_irq_status(ctx, &irq);
+	lr11xx_system_irq_mask_t irq = 0;
+	lr11xx_status_t rc = lr11xx_system_get_irq_status(ctx, &irq);
 	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
+
+	if (rc != LR11XX_STATUS_OK) {
+		LOG_ERR("Failed to read IRQ status (rc=%d)", rc);
+		goto safety_check;
+	}
 
 	LOG_INF("DIO1 IRQ: 0x%08x tx=%d t=%lld", irq, data->tx_active,
 		k_uptime_get());
@@ -453,8 +459,15 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 						   rx_stat.buffer_start_pointer,
 						   rx_stat.pld_len_in_bytes);
 
+			/* LR1110 errata: RX buffer base shifts 4 bytes per
+			 * received packet.  Without clearing, after ~64
+			 * packets the offset wraps the 256-byte buffer and
+			 * corrupts data.  RadioLib does the same clear. */
+			lr11xx_regmem_clear_rxbuffer(ctx);
+
 			/* Lightweight RX restart — no reconfig needed */
 			lr11xx_restart_rx(data);
+			rx_restarted = true;
 
 			/* When SNR < 0 the packet RSSI is dominated by
 			 * noise — use the signal-only RSSI estimate for a
@@ -481,6 +494,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 
 		LOG_WRN("RX: invalid len %d", rx_stat.pld_len_in_bytes);
 		lr11xx_restart_rx(data);
+		rx_restarted = true;
 	}
 
 	/* ── TX done ── */
@@ -490,6 +504,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 
 		/* Full restart — modem was reconfigured for TX */
 		lr11xx_start_rx(data, cfg);
+		rx_restarted = true;
 
 		/* Raise TX signal */
 		if (data->tx_signal) {
@@ -503,12 +518,14 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 			data->rx_duty_cycle_enabled);
 		if (!data->tx_active) {
 			lr11xx_restart_rx(data);
+			rx_restarted = true;
 		}
 	}
 
 	/* ── CRC / Header error ── */
-	if (irq & (LR11XX_SYSTEM_IRQ_CRC_ERROR |
-		   LR11XX_SYSTEM_IRQ_HEADER_ERROR)) {
+	if (irq & LR11XX_SYSTEM_IRQ_CRC_ERROR ||
+	    ((irq & LR11XX_SYSTEM_IRQ_HEADER_ERROR) &&
+	     !(irq & LR11XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID))) {
 		LOG_WRN("RX error: CRC=%d HDR=%d",
 			(irq & LR11XX_SYSTEM_IRQ_CRC_ERROR) ? 1 : 0,
 			(irq & LR11XX_SYSTEM_IRQ_HEADER_ERROR) ? 1 : 0);
@@ -522,6 +539,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 
 		if (!data->tx_active) {
 			lr11xx_restart_rx(data);
+			rx_restarted = true;
 		}
 
 		k_mutex_unlock(&data->spi_mutex);
@@ -532,6 +550,27 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 					  data->async_rx_user_data);
 		}
 		return;
+	}
+
+safety_check:
+	/* Safety net: if we should be in RX but no IRQ branch restarted it,
+	 * force a restart.  This catches:
+	 *   - SPI failure reading IRQ status (irq=0, rc!=OK)
+	 *   - CMD_ERROR-only DIO1 (benign, but radio fell back to standby)
+	 *   - Unknown IRQ bits not handled above
+	 * Without this, the radio stays in STDBY_RC (fallback mode) and
+	 * never receives again — permanently deaf. */
+	if (!rx_restarted && data->in_rx_mode && !data->tx_active) {
+		LOG_WRN("DIO1 safety: no IRQ handled (0x%08x rc=%d), "
+			"restarting RX", irq, rc);
+		lr11xx_restart_rx(data);
+	}
+
+	/* Edge-triggered DIO1: if the pin is still HIGH after processing,
+	 * a new IRQ arrived during handling.  No rising edge will fire,
+	 * so re-submit work to process the pending flags. */
+	if (gpio_pin_get_dt(&data->hal_ctx.dio1)) {
+		k_work_submit_to_queue(&data->dio1_wq, &data->dio1_work);
 	}
 
 	k_mutex_unlock(&data->spi_mutex);
@@ -845,23 +884,38 @@ static int lr11xx_hw_init(struct lr11xx_data *data,
 
 	LOG_INF("LR11xx hardware init starting");
 
-	/* Hardware reset */
-	lr11xx_hal_status_t hal_rc = lr11xx_hal_reset(ctx);
-	if (hal_rc != LR11XX_HAL_STATUS_OK) {
-		LOG_ERR("LR11xx reset failed");
+	/* Hardware reset + chip detection with retry.  Noisy power-up or
+	 * slow TCXO startup can cause the first attempt to fail.  RadioLib
+	 * retries up to 10 times — we use 3 which is plenty for Zephyr
+	 * where POST_KERNEL init runs well after power stabilises. */
+	lr11xx_system_version_t ver;
+	bool found = false;
+
+	for (int attempt = 0; attempt < 3; attempt++) {
+		lr11xx_hal_status_t hal_rc = lr11xx_hal_reset(ctx);
+		if (hal_rc != LR11XX_HAL_STATUS_OK) {
+			LOG_WRN("LR11xx reset failed (attempt %d)", attempt);
+			k_msleep(10);
+			continue;
+		}
+
+		lr11xx_status_t st = lr11xx_system_get_version(ctx, &ver);
+		if (st == LR11XX_STATUS_OK) {
+			found = true;
+			break;
+		}
+
+		LOG_WRN("LR11xx get_version failed (attempt %d)", attempt);
+		k_msleep(10);
+	}
+
+	if (!found) {
+		LOG_ERR("LR11xx not found after 3 attempts");
 		return -EIO;
 	}
 
-	/* Get version */
-	lr11xx_system_version_t ver;
-	lr11xx_status_t st = lr11xx_system_get_version(ctx, &ver);
-	if (st == LR11XX_STATUS_OK) {
-		LOG_INF("LR11xx HW:0x%02X Type:0x%02X FW:0x%04X",
-			ver.hw, ver.type, ver.fw);
-	} else {
-		LOG_ERR("Get version failed");
-		return -EIO;
-	}
+	LOG_INF("LR11xx HW:0x%02X Type:0x%02X FW:0x%04X",
+		ver.hw, ver.type, ver.fw);
 
 	/* TCXO */
 	if (cfg->tcxo_voltage_mv > 0) {
