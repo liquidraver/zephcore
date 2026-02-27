@@ -170,6 +170,9 @@ static size_t write_frame(const uint8_t *src, size_t len)
  */
 static void push_callback(uint8_t code, const uint8_t *data, size_t len)
 {
+	/* No point serializing if nobody is listening */
+	if (!zephcore_ble_is_connected()) return;
+
 	/* Push frame: code byte + optional data */
 	uint8_t push_buf[1 + MAX_FRAME_SIZE - 1];
 	size_t total_len = 1 + len;
@@ -185,7 +188,7 @@ static void push_callback(uint8_t code, const uint8_t *data, size_t len)
 		memcpy(&push_buf[1], data, len);
 	}
 
-	LOG_INF("code=0x%02x len=%u (total frame)", code, (unsigned)total_len);
+	LOG_DBG("code=0x%02x len=%u (total frame)", code, (unsigned)total_len);
 	write_frame(push_buf, total_len);
 }
 

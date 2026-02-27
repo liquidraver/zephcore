@@ -15,6 +15,7 @@
 #include <zephyr/sys/reboot.h>
 #include <ZephyrSensorManager.h>
 #include <adapters/sensors/SimpleLPP.h>
+#include <adapters/ble/ZephyrBLE.h>
 LOG_MODULE_REGISTER(zephcore_companion, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 /* Protocol commands (matches Arduino companion_radio) - sorted by opcode */
@@ -313,7 +314,7 @@ void CompanionMesh::sendPacketError(uint8_t code)
 
 void CompanionMesh::sendPush(uint8_t code, const uint8_t *data, size_t len)
 {
-	LOG_INF("sendPush: code=0x%02x len=%u _push_cb=%s", code, (unsigned)len, _push_cb ? "set" : "NULL");
+	LOG_DBG("sendPush: code=0x%02x len=%u _push_cb=%s", code, (unsigned)len, _push_cb ? "set" : "NULL");
 	if (_push_cb) {
 		_push_cb(code, data, len);
 	} else {
@@ -1686,6 +1687,11 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			LOG_INF("CMD_SYNC_NEXT_MESSAGE: queue empty, sending NO_MORE_MSGS");
 			uint8_t rsp[] = { PACKET_NO_MORE_MSGS };
 			writeFrame(rsp, sizeof(rsp));
+
+			/* Initial sync is done — safe to apply deferred
+			 * connection parameters now without disrupting
+			 * channel/contact/message throughput. */
+			zephcore_ble_conn_params_ready();
 		}
 		return true;
 	}

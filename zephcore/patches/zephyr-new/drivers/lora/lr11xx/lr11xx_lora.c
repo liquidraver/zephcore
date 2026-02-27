@@ -29,7 +29,7 @@ LOG_MODULE_REGISTER(lr11xx_lora, CONFIG_LORA_LOG_LEVEL);
 
 /* Dedicated DIO1 work queue — keeps LoRa interrupt processing off the
  * system work queue so USB/BLE/timer work items cannot delay packet RX. */
-#define LR11XX_DIO1_WQ_STACK_SIZE 1536
+#define LR11XX_DIO1_WQ_STACK_SIZE 2560
 K_THREAD_STACK_DEFINE(lr11xx_dio1_wq_stack, LR11XX_DIO1_WQ_STACK_SIZE);
 
 /* ── Driver data structures ─────────────────────────────────────────── */
@@ -79,12 +79,17 @@ struct lr11xx_data {
 	volatile bool in_rx_mode;
 
 	/* Extension features (duty cycle, boost) */
-	bool rx_duty_cycle_enabled;
+	bool rx_duty_cycle_enabled; /* unused — LR1110 always continuous RX */
 	bool rx_boost_enabled;
 	bool rx_boost_applied;  /* RX boost register written to hardware */
 
 	/* Deferred hardware init — heavy SPI/radio work runs on first config() */
 	bool hw_initialized;
+
+	/* DIO1 stuck-HIGH detection: counts consecutive empty IRQ cycles.
+	 * If DIO1 stays HIGH with no actionable IRQ for too many cycles,
+	 * the LR1110 is hung — trigger a hardware reset. */
+	int dio1_stuck_count;
 
 	/* RX data buffer — filled in DIO1 handler, passed to callback */
 	uint8_t rx_buf[256];
@@ -259,71 +264,12 @@ static void lr11xx_apply_modem_config(struct lr11xx_data *data,
 		0);
 }
 
-/* ── RX duty cycle (RadioLib algorithm, same as SX126x) ─────────────── */
+/* ── RX duty cycle — disabled on LR1110 ─────────────────────────────── */
 
-/* Same algorithm as SX126x SetRxDutyCycle — standard RX during the wake
- * window, full demodulation capability.  Preamble detected → hardware
- * extends timeout to receive the complete packet.  No activity → back
- * to sleep.  Identical detection reliability to the SX126x driver. */
-
-#define LR11XX_DC_MIN_SYMBOLS_SF7_PLUS  8
-#define LR11XX_DC_MIN_SYMBOLS_SF6_LESS  12
-#define LR11XX_DC_TCXO_DELAY_US         1000
-
-static void lr11xx_apply_rx_duty_cycle(struct lr11xx_data *data)
-{
-	void *ctx = &data->hal_ctx;
-	struct lora_modem_config *mc = &data->modem_cfg;
-
-	uint8_t sf = (uint8_t)mc->datarate;
-	float bw_khz = bw_enum_to_khz(mc->bandwidth);
-	uint16_t preamble_len = mc->preamble_len;
-
-	uint16_t min_symbols = (sf >= 7) ? LR11XX_DC_MIN_SYMBOLS_SF7_PLUS
-					 : LR11XX_DC_MIN_SYMBOLS_SF6_LESS;
-
-	int16_t sleep_symbols = (int16_t)preamble_len - (int16_t)min_symbols;
-	if (sleep_symbols <= 0) {
-		LOG_WRN("Preamble too short for duty cycle (need >%d, have %d)",
-			min_symbols, preamble_len);
-		data->rx_duty_cycle_enabled = false;
-		lr11xx_radio_set_rx(ctx, 0xFFFFFF);
-		return;
-	}
-
-	uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
-
-	/* Shave 2 symbols off sleep for timing margin */
-	int16_t sleep_symbols_safe = sleep_symbols - 2;
-	if (sleep_symbols_safe < 1) {
-		sleep_symbols_safe = 1;
-	}
-	uint32_t sleep_period_us = (uint16_t)sleep_symbols_safe * symbol_us;
-
-	uint32_t preamble_total_us = (preamble_len + 1) * symbol_us;
-	int32_t wake_calc1 = ((int32_t)preamble_total_us -
-			      ((int32_t)sleep_period_us - LR11XX_DC_TCXO_DELAY_US)) / 2;
-	uint32_t wake_calc2 = (min_symbols + 1) * symbol_us;
-
-	uint32_t wake_period_us = (wake_calc1 > 0 && (uint32_t)wake_calc1 > wake_calc2)
-				  ? (uint32_t)wake_calc1 : wake_calc2;
-
-	/* LR1110 API takes milliseconds (converted to RTC steps internally) */
-	uint32_t rx_ms = (wake_period_us + 500) / 1000;
-	uint32_t sleep_ms = (sleep_period_us + 500) / 1000;
-	if (rx_ms < 1) {
-		rx_ms = 1;
-	}
-	if (sleep_ms < 1) {
-		sleep_ms = 1;
-	}
-
-	lr11xx_radio_set_rx_duty_cycle(ctx, rx_ms, sleep_ms,
-				       LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
-
-	LOG_INF("RX duty cycle: rx=%ums sleep=%ums (SF%d BW%.0f)",
-		rx_ms, sleep_ms, sf, (double)bw_khz);
-}
+/* LR1110 SetRxDutyCycle is fundamentally broken: both MODE_RX and
+ * MODE_CAD fail to detect in-progress preambles, dropping 23-40% of
+ * packets depending on the sleep fraction.  The SX1262 handles this
+ * correctly.  LR1110 always uses continuous RX instead. */
 
 /* ── Start RX (internal) ────────────────────────────────────────────── */
 
@@ -332,8 +278,7 @@ static void lr11xx_start_rx(struct lr11xx_data *data,
 {
 	void *ctx = &data->hal_ctx;
 
-	LOG_INF("start_rx: t=%lld duty=%d", k_uptime_get(),
-		data->rx_duty_cycle_enabled);
+	LOG_DBG("start_rx: t=%lld", k_uptime_get());
 
 	/* Standby first — wake from any sleep state */
 	data->hal_ctx.radio_is_sleeping = true;
@@ -356,15 +301,12 @@ static void lr11xx_start_rx(struct lr11xx_data *data,
 		data->rx_boost_applied = true;
 	}
 
-	/* Start RX — continuous or duty cycle.
+	/* Start continuous RX.
 	 * 0xFFFFFF is the magic RTC-step value for continuous RX.
 	 * Must use the raw RTC-step API — set_rx() converts from ms,
-	 * which overflows uint32_t and gives a ~131 s timeout instead. */
-	if (data->rx_duty_cycle_enabled) {
-		lr11xx_apply_rx_duty_cycle(data);
-	} else {
-		lr11xx_radio_set_rx_with_timeout_in_rtc_step(ctx, 0xFFFFFF);
-	}
+	 * which overflows uint32_t and gives a ~131 s timeout instead.
+	 * LR1110 always uses continuous RX (duty cycle is broken). */
+	lr11xx_radio_set_rx_with_timeout_in_rtc_step(ctx, 0xFFFFFF);
 
 	/* LR1110 firmware sets CMD_ERROR IRQ flag on several write commands
 	 * (SetModParams, SetSyncWord, SetRxBoosted, SetRx) across all
@@ -393,12 +335,7 @@ static void lr11xx_restart_rx(struct lr11xx_data *data)
 	void *ctx = &data->hal_ctx;
 
 	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
-
-	if (data->rx_duty_cycle_enabled) {
-		lr11xx_apply_rx_duty_cycle(data);
-	} else {
-		lr11xx_radio_set_rx_with_timeout_in_rtc_step(ctx, 0xFFFFFF);
-	}
+	lr11xx_radio_set_rx_with_timeout_in_rtc_step(ctx, 0xFFFFFF);
 
 	/* RX boost persists through SetRx — no re-apply needed. */
 	data->in_rx_mode = true;
@@ -432,7 +369,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 		goto safety_check;
 	}
 
-	LOG_INF("DIO1 IRQ: 0x%08x tx=%d t=%lld", irq, data->tx_active,
+	LOG_DBG("DIO1 IRQ: 0x%08x tx=%d t=%lld", irq, data->tx_active,
 		k_uptime_get());
 
 	/* CMD_ERROR (bit 22) is expected — LR1110 firmware sets it on
@@ -443,6 +380,11 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 	 * ERROR (bit 23) indicates an actual hardware fault. */
 	if (irq & LR11XX_SYSTEM_IRQ_ERROR) {
 		LOG_WRN("IRQ hardware ERROR: 0x%08x", irq);
+	}
+
+	/* Any valid IRQ clears the stuck counter */
+	if (irq != 0) {
+		data->dio1_stuck_count = 0;
 	}
 
 	/* ── RX done ── */
@@ -499,7 +441,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 
 	/* ── TX done ── */
 	if (irq & LR11XX_SYSTEM_IRQ_TX_DONE) {
-		LOG_INF("TX done");
+		LOG_DBG("TX done");
 		data->tx_active = false;
 
 		/* Full restart — modem was reconfigured for TX */
@@ -514,8 +456,7 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 
 	/* ── Timeout ── */
 	if (irq & LR11XX_SYSTEM_IRQ_TIMEOUT) {
-		LOG_DBG("Timeout IRQ — restarting RX (duty_cycle=%d)",
-			data->rx_duty_cycle_enabled);
+		LOG_DBG("Timeout IRQ — restarting RX");
 		if (!data->tx_active) {
 			lr11xx_restart_rx(data);
 			rx_restarted = true;
@@ -568,9 +509,25 @@ safety_check:
 
 	/* Edge-triggered DIO1: if the pin is still HIGH after processing,
 	 * a new IRQ arrived during handling.  No rising edge will fire,
-	 * so re-submit work to process the pending flags. */
+	 * so re-submit work to process the pending flags.
+	 *
+	 * Guard against DIO1 stuck HIGH: if we loop here with no
+	 * actionable IRQ, the LR1110 is in a bad state.  After 5
+	 * consecutive empty cycles, do a full hardware reset. */
 	if (gpio_pin_get_dt(&data->hal_ctx.dio1)) {
-		k_work_submit_to_queue(&data->dio1_wq, &data->dio1_work);
+		data->dio1_stuck_count++;
+		if (data->dio1_stuck_count >= 5) {
+			LOG_ERR("DIO1 stuck HIGH for %d cycles — "
+				"hardware reset", data->dio1_stuck_count);
+			data->dio1_stuck_count = 0;
+			lr11xx_hardware_reset(data, cfg);
+			lr11xx_start_rx(data, cfg);
+		} else {
+			k_work_submit_to_queue(&data->dio1_wq,
+					       &data->dio1_work);
+		}
+	} else {
+		data->dio1_stuck_count = 0;
 	}
 
 	k_mutex_unlock(&data->spi_mutex);
@@ -707,7 +664,7 @@ static int lr11xx_lora_send_async(const struct device *dev,
 
 	k_mutex_unlock(&data->spi_mutex);
 
-	LOG_INF("TX started: len=%u", data_len);
+	LOG_DBG("TX started: len=%u", data_len);
 	return 0;
 }
 
@@ -762,9 +719,8 @@ static int lr11xx_lora_recv_async(const struct device *dev,
 
 	k_mutex_unlock(&data->spi_mutex);
 
-	LOG_DBG("recv_async started%s%s",
-		data->rx_duty_cycle_enabled ? " (duty cycle)" : "",
-		data->rx_boost_enabled ? " (boosted)" : "");
+	LOG_INF("recv_async started (continuous RX%s)",
+		data->rx_boost_enabled ? ", boosted" : "");
 
 	return 0;
 }
@@ -817,22 +773,9 @@ bool lr11xx_is_receiving(const struct device *dev)
 
 void lr11xx_set_rx_duty_cycle(const struct device *dev, bool enable)
 {
-	struct lr11xx_data *data = dev->data;
-	const struct lr11xx_config *cfg = dev->config;
-
-	data->rx_duty_cycle_enabled = enable;
-	LOG_INF("RX duty cycle %s", enable ? "enabled" : "disabled");
-
-	/* If currently in RX, restart with proper Standby transition.
-	 * LR1110 requires Standby before SetRx or SetRxDutyCycle —
-	 * issuing these while already in RX puts the radio in an
-	 * undefined state where RSSI reads work but packet detection
-	 * is broken (zero DIO1 IRQs). */
-	if (data->in_rx_mode) {
-		k_mutex_lock(&data->spi_mutex, K_FOREVER);
-		lr11xx_start_rx(data, cfg);
-		k_mutex_unlock(&data->spi_mutex);
-	}
+	/* LR1110 duty cycle is broken — always continuous RX. Ignore. */
+	(void)dev;
+	(void)enable;
 }
 
 void lr11xx_set_rx_boost(const struct device *dev, bool enable)

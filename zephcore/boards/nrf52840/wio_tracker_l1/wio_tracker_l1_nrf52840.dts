@@ -34,10 +34,9 @@
 	compatible = "seeed,wio-tracker-l1";
 
 	chosen {
-		zephyr,code-partition = &slot0_partition;
+		zephyr,code-partition = &code_partition;
 		zephyr,console = &cdc_acm_uart;
 		zephyr,shell-uart = &cdc_acm_uart;
-		zephyr,settings-partition = &storage_partition;
 		zephyr,display = &sh1106;
 	};
 
@@ -324,56 +323,8 @@ zephyr_udc0: &usbd {
 	};
 };
 
-&flash0 {
-	partitions {
-		compatible = "fixed-partitions";
-		#address-cells = <1>;
-		#size-cells = <1>;
-
-		/*
-		 * SoftDevice + UF2 bootloader partition layout
-		 * Total: 1MB internal flash
-		 *
-		 * 0x00000 - 0x27000  (156KB) SoftDevice s140 v7 (reserved)
-		 * 0x27000 - 0xD4000  (692KB) Application
-		 * 0xD4000 - 0xD6000  (8KB)   NVS storage (BLE bonds)
-		 * 0xD6000 - 0xED000  (92KB)  LittleFS (identity, prefs)
-		 * 0xED000 - 0x100000 (76KB)  UF2 bootloader (reserved)
-		 */
-
-		/* SoftDevice 156KB (reserved, managed by bootloader) */
-		boot_partition: partition@0 {
-			label = "softdevice";
-			read-only;
-			reg = <0x00000000 0x00027000>;
-		};
-
-		/* Application 692KB */
-		slot0_partition: partition@27000 {
-			label = "Application";
-			reg = <0x00027000 0x000AD000>;
-		};
-
-		/* NVS 8KB for BLE bonds */
-		storage_partition: partition@d4000 {
-			label = "storage";
-			reg = <0x000D4000 0x00002000>;
-		};
-
-		/* LittleFS 92KB for DataStore (identity, contacts, channels, etc) */
-		lfs_partition: partition@d6000 {
-			label = "lfs";
-			reg = <0x000D6000 0x00017000>;
-		};
-
-		/* UF2 bootloader 76KB (reserved) */
-		uf2_partition: partition@ed000 {
-			label = "UF2";
-			read-only;
-			reg = <0x000ED000 0x00013000>;
-		};
-	};
-};
+/* Arduino MeshCore compatible partition layout (SoftDevice v7) */
+#include "../../common/nrf52_partitions_sdv7.dtsi"
 
 /* External QSPI flash partitions */
 &qspi_flash {

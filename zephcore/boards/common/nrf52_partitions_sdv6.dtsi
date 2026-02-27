@@ -1,0 +1,67 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * nRF52840 partition layout — SoftDevice s140 v6 + UF2 bootloader
+ * Arduino MeshCore compatible (dual LFS, block_size=128)
+ *
+ * See nrf52_partitions_sdv7.dtsi for full include guide.
+ * Use THIS file instead of sdv7 when the board's UF2 bootloader
+ * bundles SoftDevice s140 v6.x (app starts at 0x26000).
+ *
+ * Boards: RAK4631
+ *
+ * Usage in board overlay:
+ *   /delete-node/ &boot_partition;
+ *   /delete-node/ &slot0_partition;
+ *   /delete-node/ &slot1_partition;
+ *   /delete-node/ &storage_partition;
+ *   #include "../../common/nrf52_partitions_sdv6.dtsi"
+ *
+ * Memory map (1MB internal flash):
+ *   0x00000 - 0x26000  (152KB) SoftDevice s140 v6 (reserved)
+ *   0x26000 - 0xD4000  (696KB) Application
+ *   0xD4000 - 0xED000  (100KB) ExtraFS (contacts, channels, blobs)
+ *   0xED000 - 0xF4000  (28KB)  InternalFS (prefs, identity, BLE settings)
+ *   0xF4000 - 0x100000 (48KB)  UF2 bootloader (reserved)
+ */
+
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* SoftDevice s140 v6.1.1 — 152KB (reserved, managed by bootloader) */
+		boot_partition: partition@0 {
+			label = "softdevice";
+			read-only;
+			reg = <0x00000000 0x00026000>;
+		};
+
+		/* Application — 696KB */
+		code_partition: partition@26000 {
+			label = "Application";
+			reg = <0x00026000 0x000AE000>;
+		};
+
+		/* ExtraFS — 100KB: contacts3, channels2, adv_blobs
+		 * Arduino: CustomLFS(0xD4000, 0x19000, 128) */
+		extrafs_partition: partition@d4000 {
+			label = "extrafs";
+			reg = <0x000D4000 0x00019000>;
+		};
+
+		/* InternalFS — 28KB: new_prefs, _main.id, BLE settings
+		 * Arduino: Adafruit InternalFS(0xED000, 0x7000, 128) */
+		internalfs_partition: partition@ed000 {
+			label = "internalfs";
+			reg = <0x000ED000 0x00007000>;
+		};
+
+		/* UF2 bootloader — 48KB (reserved) */
+		uf2_partition: partition@f4000 {
+			label = "UF2";
+			read-only;
+			reg = <0x000F4000 0x0000C000>;
+		};
+	};
+};

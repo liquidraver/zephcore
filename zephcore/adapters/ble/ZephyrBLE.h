@@ -111,6 +111,14 @@ void zephcore_ble_kick_tx(void);
  */
 void zephcore_ble_disconnect(void);
 
+/**
+ * Apply deferred connection parameters.
+ * Call after the initial app sync is complete (channels + contacts +
+ * offline messages) so the param negotiation doesn't disrupt throughput
+ * during the sync burst.
+ */
+void zephcore_ble_conn_params_ready(void);
+
 #ifdef __cplusplus
 }
 #endif

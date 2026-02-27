@@ -1,5 +1,5 @@
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index 8e0ca45c271..6b0ee88ff0c 100644
+index 8e0ca45c271..eb9342a13b9 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -9,10 +9,19 @@
@@ -13,7 +13,7 @@ index 8e0ca45c271..6b0ee88ff0c 100644
  
 +/* Dedicated DIO1 work queue — keeps LoRa interrupt processing off the
 + * system work queue so USB/BLE/timer work items cannot delay packet RX. */
-+#define SX126X_DIO1_WQ_STACK_SIZE 1536
++#define SX126X_DIO1_WQ_STACK_SIZE 2560
 +K_THREAD_STACK_DEFINE(sx126x_dio1_wq_stack, SX126X_DIO1_WQ_STACK_SIZE);
 +
 +/* Register not in sx126x_regs.h — only used for §15.3 workaround */

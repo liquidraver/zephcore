@@ -396,6 +396,7 @@ else()
     src/main_companion.cpp
     adapters/ble/ZephyrBLE.cpp
     adapters/datastore/ZephyrDataStore.cpp
+    adapters/datastore/lfs_128b_erase.c
     helpers/BaseChatMesh.cpp
     helpers/TransportKeyStore.cpp
     helpers/ui/ui_mesh_actions.cpp

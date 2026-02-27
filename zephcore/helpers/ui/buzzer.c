@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Non-blocking RTTTL parser using Zephyr PWM API.
- * Each note is scheduled via k_work_delayable - fully event-driven.
+ * Each note is scheduled via k_work_delayable on a dedicated work queue
+ * so flash/BLE/filesystem operations can't delay note timing.
  *
  * RTTTL Format: "Name:d=D,o=O,b=B:note,note,..."
  *   D = default duration (1,2,4,8,16,32)
@@ -28,6 +29,20 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(buzzer, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
 
+/* ========== Dedicated Buzzer Work Queue ========== */
+/* Runs note scheduling at high priority so flash/BLE/FS operations
+ * on the system workqueue can't delay tone timing. */
+#define BUZZER_WQ_STACK_SIZE 512
+#define BUZZER_WQ_PRIORITY   2  /* Higher than default workqueue (usually 10+) */
+
+K_THREAD_STACK_DEFINE(buzzer_wq_stack, BUZZER_WQ_STACK_SIZE);
+static struct k_work_q buzzer_wq;
+
+/* Maximum duration (ms) a single tone can play before auto-silence.
+ * Safety net: if the work queue stalls or the handler doesn't fire,
+ * the hardware timer kills the PWM after this timeout. */
+#define BUZZER_TONE_MAX_MS  2000
+
 /* ========== Note Frequency Table ========== */
 /* Frequencies for octave 4 (middle C = C4 = 262 Hz) */
 /* Index: C=0, C#=1, D=2, D#=3, E=4, F=5, F#=6, G=7, G#=8, A=9, A#=10, B=11 */
@@ -40,6 +55,7 @@ struct buzzer_ctx {
 	struct pwm_dt_spec pwm;
 	const struct device *enable_reg; /* Optional regulator for buzzer amp */
 	struct k_work_delayable note_work;
+	struct k_work_delayable safety_work; /* Auto-silence watchdog */
 
 	/* RTTTL parser state */
 	const char *melody;       /* Current position in RTTTL string */
@@ -295,6 +311,23 @@ static void buzzer_silence(void)
 	buzzer_set_tone(0);
 }
 
+/* ========== Safety Watchdog ========== */
+
+/**
+ * Auto-silence handler: kills PWM if a note has been playing too long.
+ * This is a safety net for crashes or workqueue stalls — the PWM hardware
+ * is autonomous and keeps driving the pin until explicitly stopped.
+ */
+static void safety_work_handler(struct k_work *work)
+{
+	if (ctx.playing) {
+		LOG_WRN("safety timeout — silencing stuck tone");
+		ctx.playing = false;
+		buzzer_silence();
+		buzzer_amp_off();
+	}
+}
+
 /* ========== Note Work Handler ========== */
 
 static void note_work_handler(struct k_work *work)
@@ -305,6 +338,7 @@ static void note_work_handler(struct k_work *work)
 	if (!ctx.playing) {
 		buzzer_silence();
 		buzzer_amp_off();
+		k_work_cancel_delayable(&ctx.safety_work);
 		return;
 	}
 
@@ -313,25 +347,21 @@ static void note_work_handler(struct k_work *work)
 		buzzer_silence();
 		buzzer_amp_off();
 		ctx.playing = false;
+		k_work_cancel_delayable(&ctx.safety_work);
 		return;
 	}
 
 	/* Play this note */
 	buzzer_set_tone(freq);
 
-	/* Add a small gap between notes (90% tone, 10% silence) */
-	uint32_t tone_ms = (dur_ms * 9) / 10;
-	uint32_t gap_ms = dur_ms - tone_ms;
+	/* Reset safety watchdog — if the next note_work doesn't fire
+	 * within BUZZER_TONE_MAX_MS, the safety handler kills the PWM. */
+	k_work_reschedule_for_queue(&buzzer_wq, &ctx.safety_work,
+				    K_MSEC(BUZZER_TONE_MAX_MS));
 
-	if (gap_ms < 1) {
-		gap_ms = 1;
-	}
-
-	/* Schedule silence gap after tone, then next note */
-	/* For simplicity: play tone for full duration, next work picks up next note.
-	 * The inter-note gap comes from the 90/10 split. */
-	(void)gap_ms;
-	k_work_reschedule(&ctx.note_work, K_MSEC(dur_ms));
+	/* Schedule next note after this note's duration */
+	k_work_reschedule_for_queue(&buzzer_wq, &ctx.note_work,
+				    K_MSEC(dur_ms));
 }
 
 /* ========== Public API ========== */
@@ -370,7 +400,15 @@ int buzzer_init(void)
 		}
 	}
 
+	/* Start dedicated buzzer work queue */
+	k_work_queue_init(&buzzer_wq);
+	k_work_queue_start(&buzzer_wq, buzzer_wq_stack,
+			   K_THREAD_STACK_SIZEOF(buzzer_wq_stack),
+			   BUZZER_WQ_PRIORITY, NULL);
+	k_thread_name_set(&buzzer_wq.thread, "buzzer_wq");
+
 	k_work_init_delayable(&ctx.note_work, note_work_handler);
+	k_work_init_delayable(&ctx.safety_work, safety_work_handler);
 
 	ctx.quiet = true;  /* Start quiet like Arduino */
 	ctx.playing = false;
@@ -380,7 +418,7 @@ int buzzer_init(void)
 	buzzer_silence();
 	buzzer_amp_off();
 
-	LOG_INF("buzzer initialized (PWM)");
+	LOG_INF("buzzer initialized (PWM, dedicated wq)");
 	return 0;
 }
 
@@ -414,8 +452,8 @@ void buzzer_play(const char *rtttl)
 	/* Enable buzzer amplifier power */
 	buzzer_amp_on();
 
-	/* Start playing first note immediately */
-	k_work_reschedule(&ctx.note_work, K_NO_WAIT);
+	/* Start playing first note immediately on dedicated wq */
+	k_work_reschedule_for_queue(&buzzer_wq, &ctx.note_work, K_NO_WAIT);
 }
 
 void buzzer_stop(void)
@@ -426,6 +464,7 @@ void buzzer_stop(void)
 
 	ctx.playing = false;
 	k_work_cancel_delayable(&ctx.note_work);
+	k_work_cancel_delayable(&ctx.safety_work);
 	buzzer_silence();
 	buzzer_amp_off();
 }

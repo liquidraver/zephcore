@@ -1,0 +1,96 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * nRF52840 partition layout — SoftDevice s140 v7 + UF2 bootloader
+ * Arduino MeshCore compatible (dual LFS, block_size=128)
+ *
+ * ┌──────────────────────────────────────────────────────────────────┐
+ * │  ZephCore Board DTS Include Guide — Storage & Partitions        │
+ * ├──────────────────────────────────────────────────────────────────┤
+ * │                                                                  │
+ * │  PLATFORM          INCLUDE THIS FILE                            │
+ * │  ────────          ──────────────────                           │
+ * │  nRF52 + SD v7     nrf52_partitions_sdv7.dtsi  ← THIS FILE     │
+ * │  nRF52 + SD v6     nrf52_partitions_sdv6.dtsi                   │
+ * │  ESP32 / MG24 /    filesystem.dtsi  (single /lfs automount)     │
+ * │    nRF54L                                                       │
+ * │                                                                  │
+ * │  OPTIONAL ADD-ON   WHEN TO USE                                  │
+ * │  ────────────────  ──────────                                   │
+ * │  qspi-ext.dtsi     Board has QSPI flash → adds /ext mount      │
+ * │                     (contacts/channels/blobs migrate to QSPI)   │
+ * │                     Requires board to define qspi_storage_part  │
+ * │                                                                  │
+ * │  sensors-i2c.dtsi   Board has I2C sensors (auto-detect)         │
+ * │                                                                  │
+ * │  HOW TO IDENTIFY YOUR SOFTDEVICE VERSION:                       │
+ * │  - SD v7: Application starts at 0x27000 (156KB reserved)       │
+ * │    Boards: T1000-E, Ikoka Nano 30dBm, Wio Tracker L1           │
+ * │  - SD v6: Application starts at 0x26000 (152KB reserved)       │
+ * │    Boards: RAK4631                                              │
+ * │                                                                  │
+ * │  USAGE IN BOARD DTS (if base includes nrf52840_partition.dtsi): │
+ * │    /delete-node/ &boot_partition;                               │
+ * │    /delete-node/ &slot0_partition;                              │
+ * │    /delete-node/ &slot1_partition;                              │
+ * │    /delete-node/ &storage_partition;                            │
+ * │    #include "../../common/nrf52_partitions_sdv7.dtsi"           │
+ * │                                                                  │
+ * │  CHOSEN NODE:                                                   │
+ * │    zephyr,code-partition = &code_partition;                     │
+ * │    (Do NOT set zephyr,settings-partition — uses file settings)  │
+ * │                                                                  │
+ * │  QSPI ADD-ON (if board has external QSPI flash):               │
+ * │    In board.overlay:                                            │
+ * │      #include "../../common/qspi-ext.dtsi"                     │
+ * │                                                                  │
+ * └──────────────────────────────────────────────────────────────────┘
+ *
+ * Memory map (1MB internal flash):
+ *   0x00000 - 0x27000  (156KB) SoftDevice s140 v7 (reserved)
+ *   0x27000 - 0xD4000  (692KB) Application
+ *   0xD4000 - 0xED000  (100KB) ExtraFS (contacts, channels, blobs)
+ *   0xED000 - 0xF4000  (28KB)  InternalFS (prefs, identity, BLE settings)
+ *   0xF4000 - 0x100000 (48KB)  UF2 bootloader (reserved)
+ */
+
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* SoftDevice s140 v7 — 156KB (reserved, managed by bootloader) */
+		boot_partition: partition@0 {
+			label = "softdevice";
+			read-only;
+			reg = <0x00000000 0x00027000>;
+		};
+
+		/* Application — 692KB */
+		code_partition: partition@27000 {
+			label = "Application";
+			reg = <0x00027000 0x000AD000>;
+		};
+
+		/* ExtraFS — 100KB: contacts3, channels2, adv_blobs
+		 * Arduino: CustomLFS(0xD4000, 0x19000, 128) */
+		extrafs_partition: partition@d4000 {
+			label = "extrafs";
+			reg = <0x000D4000 0x00019000>;
+		};
+
+		/* InternalFS — 28KB: new_prefs, _main.id, BLE settings
+		 * Arduino: Adafruit InternalFS(0xED000, 0x7000, 128) */
+		internalfs_partition: partition@ed000 {
+			label = "internalfs";
+			reg = <0x000ED000 0x00007000>;
+		};
+
+		/* UF2 bootloader — 48KB (reserved) */
+		uf2_partition: partition@f4000 {
+			label = "UF2";
+			read-only;
+			reg = <0x000F4000 0x0000C000>;
+		};
+	};
+};

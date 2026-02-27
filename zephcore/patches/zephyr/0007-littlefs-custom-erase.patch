@@ -1,0 +1,15 @@
+diff --git a/subsys/fs/littlefs_fs.c b/subsys/fs/littlefs_fs.c
+index 6176d533e32..1ea405a3d1f 100644
+--- a/subsys/fs/littlefs_fs.c
++++ b/subsys/fs/littlefs_fs.c
+@@ -901,7 +901,9 @@ static int littlefs_init_cfg(struct fs_littlefs *fs, int flags)
+ #ifdef CONFIG_FS_LITTLEFS_FMP_DEV
+ 		lcp->read = lfs_api_read;
+ 		lcp->prog = lfs_api_prog;
+-		lcp->erase = lfs_api_erase;
++		if (!lcp->erase) {
++			lcp->erase = lfs_api_erase;
++		}
+ #endif
+ 
+ 		lcp->read_size = read_size;

@@ -23,6 +23,6 @@
 	};
 };
 
-/* Filesystem mounts - internal /lfs + external /ext QSPI */
-#include "../../common/filesystem.dtsi"
+/* Internal LFS mounted manually by ZephyrDataStore (block_size=128, custom erase) */
+/* External QSPI /ext auto-mounted via DTS (standard 4KB blocks) */
 #include "../../common/qspi-ext.dtsi"

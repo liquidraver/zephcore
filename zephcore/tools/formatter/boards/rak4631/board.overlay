@@ -14,7 +14,7 @@
 		zephyr,code-partition = &code_partition;
 		zephyr,console = &cdc_acm_uart;
 		zephyr,shell-uart = &cdc_acm_uart;
-		zephyr,settings-partition = &storage_partition;
+		/* No zephyr,settings-partition — nRF52 uses file-based settings */
 	};
 };
 
@@ -29,33 +29,5 @@
 	status = "disabled";
 };
 
-&flash0 {
-	partitions {
-		boot_partition: partition@0 {
-			label = "softdevice";
-			read-only;
-			reg = <0x00000000 0x00026000>;
-		};
-
-		code_partition: partition@26000 {
-			label = "Application";
-			reg = <0x00026000 0x000AE000>;
-		};
-
-		storage_partition: partition@d4000 {
-			label = "storage";
-			reg = <0x000D4000 0x00002000>;
-		};
-
-		lfs_partition: partition@d6000 {
-			label = "lfs";
-			reg = <0x000D6000 0x0001E000>;
-		};
-
-		uf2_partition: partition@f4000 {
-			label = "UF2";
-			read-only;
-			reg = <0x000F4000 0x0000C000>;
-		};
-	};
-};
+/* Arduino MeshCore compatible partition layout (SoftDevice v6) */
+#include "../../../../boards/common/nrf52_partitions_sdv6.dtsi"

@@ -1,10 +1,19 @@
 /*
- * Common QSPI external flash LittleFS configuration for ZephCore boards.
- * Include this in board overlays that have QSPI flash for /ext mount.
- *
- * Requires board to define: &qspi_storage_partition
- *
  * SPDX-License-Identifier: Apache-2.0
+ * QSPI external flash /ext automount — optional add-on for any platform
+ *
+ * See nrf52_partitions_sdv7.dtsi for full include guide.
+ *
+ * When /ext is available, ZephyrDataStore redirects contacts, channels,
+ * and blobs to QSPI flash (more space, faster writes on native 4KB blocks).
+ * Prefs and identity stay on internal flash.
+ *
+ * Requires board DTS to define: qspi_storage_partition
+ *
+ * Usage in board overlay (in addition to partition or filesystem include):
+ *   #include "../../common/qspi-ext.dtsi"
+ *
+ * Works with BOTH nRF52 dual-mount and single /lfs mount boards.
  */
 
 / {

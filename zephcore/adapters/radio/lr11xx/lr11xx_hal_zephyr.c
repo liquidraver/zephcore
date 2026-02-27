@@ -57,7 +57,7 @@ static lr11xx_hal_status_t wait_on_busy(struct lr11xx_hal_context *ctx)
                     gpio_pin_get_dt(&ctx->dio1));
             return LR11XX_HAL_STATUS_ERROR;
         }
-        k_busy_wait(100);  /* 100us */
+        k_usleep(100);  /* 100us — yields CPU so other threads can run */
         loops++;
     }
 

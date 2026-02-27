@@ -62,6 +62,11 @@ struct frame {
 
 /* ========== Static state ========== */
 
+/* Deferred connection parameter update — applied after initial sync
+ * completes (NO_MORE_MSGS) rather than immediately on security_changed,
+ * because the negotiation disrupts BLE throughput during channel/contact sync. */
+static bool conn_params_pending;
+
 /* Callbacks to main */
 static const struct ble_callbacks *ble_cbs;
 
@@ -112,9 +117,6 @@ static enum zephcore_iface active_iface = ZEPHCORE_IFACE_NONE;
 
 /* DLE tracking — set after successful DLE request to avoid double-request */
 static bool dle_requested;
-
-/* PHY override — request Coded|1M once if phone chose 2M */
-static bool phy_override_sent;
 
 /* Advertising state */
 static bool adv_switching = false;
@@ -276,7 +278,6 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	 * DLE is deferred to le_phy_updated() (after PHY negotiation completes)
 	 * with a fallback in security_changed() if PHY update never fires. */
 	dle_requested = false;
-	phy_override_sent = false;
 
 	/* Do NOT proactively request security here.
 	 *
@@ -321,6 +322,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	/* Reset BLE TX state */
 	ble_tx_in_progress = false;
 	ble_tx_ready = false;
+	conn_params_pending = false;
 
 	/* Clear interface state if BLE was active */
 	if (active_iface == ZEPHCORE_IFACE_BLE) {
@@ -391,22 +393,13 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 		 * request_dle() returns immediately (dle_requested flag). */
 		request_dle(conn);
 #endif
-		/* Request our preferred connection parameters. */
-		struct bt_le_conn_param conn_param = {
-			.interval_min = BLE_DEFAULT_MIN_INTERVAL,
-			.interval_max = BLE_DEFAULT_MAX_INTERVAL,
-			.latency = BLE_DEFAULT_LATENCY,
-			.timeout = BLE_DEFAULT_TIMEOUT,
-		};
-		int param_err = bt_conn_le_param_update(conn, &conn_param);
-		if (param_err) {
-			LOG_WRN("Failed to request conn param update: %d", param_err);
-		} else {
-			LOG_INF("Requested conn params: %d-%dms interval, latency=%d",
-				BLE_DEFAULT_MIN_INTERVAL * 5 / 4,
-				BLE_DEFAULT_MAX_INTERVAL * 5 / 4,
-				BLE_DEFAULT_LATENCY);
-		}
+		/* Defer connection parameter update until after the initial
+		 * app sync finishes (channels + contacts + offline messages).
+		 * Requesting a param change now would disrupt BLE throughput
+		 * during the sync burst.  CompanionMesh calls
+		 * zephcore_ble_conn_params_ready() when sync is done. */
+		conn_params_pending = true;
+		LOG_INF("conn param update deferred until post-sync");
 	}
 }
 
@@ -481,27 +474,9 @@ static void le_phy_updated(struct bt_conn *conn, struct bt_conn_le_phy_info *par
 	LOG_INF("BLE PHY updated: TX=%s RX=%s", phy_name(param->tx_phy),
 		phy_name(param->rx_phy));
 
-	/* If the phone chose 2M, override with Coded|1M preference.
-	 * Coded gives ~4× BLE range (S=8); if the phone doesn't support it,
-	 * the intersection is 1M (better range than 2M for a mesh device).
-	 * Only try once to avoid ping-pong if the phone insists on 2M. */
-	if (param->tx_phy == BT_GAP_LE_PHY_2M && !phy_override_sent) {
-		const struct bt_conn_le_phy_param phy_pref = {
-			.options = BT_CONN_LE_PHY_OPT_NONE,
-			.pref_tx_phy = BT_GAP_LE_PHY_CODED | BT_GAP_LE_PHY_1M,
-			.pref_rx_phy = BT_GAP_LE_PHY_CODED | BT_GAP_LE_PHY_1M,
-		};
-		phy_override_sent = true;
-		int err = bt_conn_le_phy_update(conn, &phy_pref);
-		if (err) {
-			LOG_WRN("PHY override failed: %d, requesting DLE", err);
-		} else {
-			LOG_INF("Requested Coded|1M PHY (overriding 2M)");
-			return;  /* DLE when this callback fires again */
-		}
-	}
-
-	/* PHY is settled — request DLE.  Deferred here from connected()
+	/* Accept whatever PHY the phone chose — overriding 2M with Coded|1M
+	 * caused iPhone to freeze the connection (and the whole node).
+	 * PHY is settled — request DLE.  Deferred here from connected()
 	 * because the phone starts a PHY procedure on connect and BLE
 	 * only allows one LL procedure at a time. */
 	request_dle(conn);
@@ -1015,5 +990,29 @@ void zephcore_ble_disconnect(void)
 {
 	if (current_conn) {
 		bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+	}
+}
+
+void zephcore_ble_conn_params_ready(void)
+{
+	if (!conn_params_pending || !current_conn) {
+		return;
+	}
+	conn_params_pending = false;
+
+	struct bt_le_conn_param conn_param = {
+		.interval_min = BLE_DEFAULT_MIN_INTERVAL,
+		.interval_max = BLE_DEFAULT_MAX_INTERVAL,
+		.latency = BLE_DEFAULT_LATENCY,
+		.timeout = BLE_DEFAULT_TIMEOUT,
+	};
+	int err = bt_conn_le_param_update(current_conn, &conn_param);
+	if (err) {
+		LOG_WRN("Post-sync conn param update failed: %d", err);
+	} else {
+		LOG_INF("Post-sync conn params: %d-%dms interval, latency=%d",
+			BLE_DEFAULT_MIN_INTERVAL * 5 / 4,
+			BLE_DEFAULT_MAX_INTERVAL * 5 / 4,
+			BLE_DEFAULT_LATENCY);
 	}
 }

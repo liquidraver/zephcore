@@ -1,6 +1,13 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  * Zephyr DataStore - LittleFS-backed persistence with optional QSPI flash
+ *
+ * Universal across all platforms (nRF52, ESP32, MG24, nRF54L).
+ * On nRF52, uses Arduino MeshCore-compatible dual-mount layout:
+ *   /efs (ExtraFS @ 0xD4000, 100KB, block_size=128) — contacts3, channels2, blobs
+ *   /ifs (InternalFS @ 0xED000, 28KB, block_size=128) — new_prefs, _main.id
+ * On other platforms, uses DTS-automounted /lfs for everything.
+ * QSPI /ext overrides contacts path when available (any platform).
  */
 
 #pragma once
@@ -47,36 +54,29 @@ public:
 
 	static bool mount();
 	static void unmount();
-	static const char *mountPoint() { return MNT_POINT; }
-	static const char *extMountPoint() { return EXT_MNT_POINT; }
 
 private:
-	/* Internal flash (always available) - identity, prefs */
-	static constexpr const char *MNT_POINT = "/lfs";
-	static constexpr const char *PREFS_FILE = "/lfs/new_prefs";
-	static constexpr const char *MAIN_ID_FILE = "/lfs/_main.id";
+	/* Mount points resolved at mount time:
+	 * nRF52:  _contacts_mnt="/efs", _prefs_mnt="/ifs"
+	 * Others: _contacts_mnt="/lfs", _prefs_mnt="/lfs"
+	 * QSPI:   _contacts_mnt="/ext" (override) */
+	static const char *_contacts_mnt;
+	static const char *_prefs_mnt;
 
-	/* External QSPI flash (optional) - contacts, channels, blobs */
+	/* External QSPI flash (optional, any platform) */
 	static constexpr const char *EXT_MNT_POINT = "/ext";
-	static constexpr const char *EXT_CONTACTS_FILE = "/ext/contacts3";
-	static constexpr const char *EXT_CHANNELS_FILE = "/ext/channels2";
-	static constexpr const char *EXT_ADV_BLOBS_FILE = "/ext/adv_blobs";
-
-	/* Fallback to internal if no external */
-	static constexpr const char *INT_CONTACTS_FILE = "/lfs/contacts3";
-	static constexpr const char *INT_CHANNELS_FILE = "/lfs/channels2";
-	static constexpr const char *INT_ADV_BLOBS_FILE = "/lfs/adv_blobs";
 
 	mesh::RTCClock *_clock;
 	bool _has_ext_fs;
 
-	/* Get path based on external availability */
-	const char *contactsFile() const { return _has_ext_fs ? EXT_CONTACTS_FILE : INT_CONTACTS_FILE; }
-	const char *channelsFile() const { return _has_ext_fs ? EXT_CHANNELS_FILE : INT_CHANNELS_FILE; }
-	const char *advBlobsFile() const { return _has_ext_fs ? EXT_ADV_BLOBS_FILE : INT_ADV_BLOBS_FILE; }
+	/* Build full paths from resolved mount points */
+	const char *contactsFile() const;
+	const char *channelsFile() const;
+	const char *advBlobsFile() const;
+	static const char *prefsFile();
+	static const char *identityFile();
 	int maxBlobRecs() const { return _has_ext_fs ? 100 : 20; }
 
-	void cleanStaleTmpFiles();
 	void checkAdvBlobFile();
 	void migrateToExternalFS();
 	bool openRead(const char *path, uint8_t *buf, size_t buf_sz, size_t &out_len);

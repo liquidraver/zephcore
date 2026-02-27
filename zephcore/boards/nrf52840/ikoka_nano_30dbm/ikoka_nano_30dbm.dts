@@ -33,7 +33,6 @@
 		zephyr,code-partition = &code_partition;
 		zephyr,console = &cdc_acm_uart;
 		zephyr,shell-uart = &cdc_acm_uart;
-		zephyr,settings-partition = &storage_partition;
 	};
 
 	aliases {
@@ -178,46 +177,5 @@ zephyr_udc0: &usbd {
 	};
 };
 
-/* LittleFS auto-mount — uses common config for /lfs */
-#include "../../common/filesystem.dtsi"
-/* QSPI disabled on this board — see note above */
-
-&flash0 {
-	partitions {
-		compatible = "fixed-partitions";
-		#address-cells = <1>;
-		#size-cells = <1>;
-
-		/* SoftDevice 156KB (reserved) */
-		boot_partition: partition@0 {
-			label = "softdevice";
-			read-only;
-			reg = <0x00000000 0x00027000>;
-		};
-
-		/* Application 692KB */
-		code_partition: partition@27000 {
-			label = "Application";
-			reg = <0x00027000 0x000AD000>;
-		};
-
-		/* NVS 8KB */
-		storage_partition: partition@d4000 {
-			label = "storage";
-			reg = <0x000D4000 0x00002000>;
-		};
-
-		/* LittleFS 92KB */
-		lfs_partition: partition@d6000 {
-			label = "lfs";
-			reg = <0x000D6000 0x00017000>;
-		};
-
-		/* UF2 bootloader 76KB (reserved) */
-		uf2_partition: partition@ed000 {
-			label = "UF2";
-			read-only;
-			reg = <0x000ED000 0x00013000>;
-		};
-	};
-};
+/* Arduino MeshCore compatible partition layout (SoftDevice v7) */
+#include "../../common/nrf52_partitions_sdv7.dtsi"

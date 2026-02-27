@@ -1,10 +1,22 @@
 /*
- * Common LittleFS filesystem configuration for ZephCore boards.
- * Include this in board overlays to get standard /lfs mount.
- *
- * Requires board to define: &lfs_partition
- *
  * SPDX-License-Identifier: Apache-2.0
+ * Common LittleFS /lfs automount — for non-nRF52 boards
+ *
+ * See nrf52_partitions_sdv7.dtsi for full include guide.
+ *
+ * USE THIS FILE FOR: ESP32, MG24, nRF54L — any board with a single
+ * LFS partition and standard 4KB erase blocks.
+ *
+ * DO NOT USE FOR nRF52: Use nrf52_partitions_sdv6.dtsi or
+ * nrf52_partitions_sdv7.dtsi instead (dual-mount, 128B blocks).
+ *
+ * Requires board DTS to define: lfs_partition
+ *
+ * Usage in board DTS/overlay:
+ *   #include "../../common/filesystem.dtsi"
+ *
+ * Optional add-on (if board has QSPI flash):
+ *   #include "../../common/qspi-ext.dtsi"
  */
 
 / {
