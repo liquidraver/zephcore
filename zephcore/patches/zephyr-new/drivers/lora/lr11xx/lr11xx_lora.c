@@ -259,35 +259,16 @@ static void lr11xx_apply_modem_config(struct lr11xx_data *data,
 		0);
 }
 
-/* ── CAD det_peak lookup (from Semtech ral_lr11xx reference) ─────────── */
+/* ── RX duty cycle (RadioLib algorithm, same as SX126x) ─────────────── */
 
-static uint8_t lr11xx_cad_det_peak(uint8_t sf, enum lora_signal_bandwidth bw)
-{
-	static const uint8_t peak_bw500[] = {
-		/* SF5  SF6  SF7  SF8  SF9  SF10 SF11 SF12 */
-		   65,  70,  77,  85,  78,  80,  79,  82
-	};
-	static const uint8_t peak_bw250[] = {
-		   60,  61,  64,  72,  63,  71,  73,  75
-	};
-	static const uint8_t peak_bw125[] = {
-		   56,  52,  52,  58,  58,  62,  66,  68
-	};
+/* Same algorithm as SX126x SetRxDutyCycle — standard RX during the wake
+ * window, full demodulation capability.  Preamble detected → hardware
+ * extends timeout to receive the complete packet.  No activity → back
+ * to sleep.  Identical detection reliability to the SX126x driver. */
 
-	if (sf < 5 || sf > 12) return 0x32;
-	uint8_t idx = sf - 5;
-
-	if (bw >= BW_500_KHZ) return peak_bw500[idx];
-	if (bw >= BW_250_KHZ) return peak_bw250[idx];
-	return peak_bw125[idx];
-}
-
-/* ── RX duty cycle (hardware CAD mode) ──────────────────────────────── */
-
-/* LR1110 native CAD duty cycle: on each wake the chip runs a fast CAD
- * (~2 symbols) instead of full RX.  Preamble detected → auto-RX with
- * extended timeout.  No activity → straight back to sleep.  The entire
- * loop runs in HW with zero IRQ overhead per cycle. */
+#define LR11XX_DC_MIN_SYMBOLS_SF7_PLUS  8
+#define LR11XX_DC_MIN_SYMBOLS_SF6_LESS  12
+#define LR11XX_DC_TCXO_DELAY_US         1000
 
 static void lr11xx_apply_rx_duty_cycle(struct lr11xx_data *data)
 {
@@ -298,55 +279,50 @@ static void lr11xx_apply_rx_duty_cycle(struct lr11xx_data *data)
 	float bw_khz = bw_enum_to_khz(mc->bandwidth);
 	uint16_t preamble_len = mc->preamble_len;
 
-	/* Margin must cover:
-	 *   2 sym  CAD scan duration (cad_symb_nb = 2 symbols)
-	 *   4 sym  demodulator preamble acquisition (~4.25 sym minimum)
-	 *   4 sym  RTC jitter + TCXO startup + state transitions
-	 *   ─────
-	 *  10 sym  total — matches the SX126x driver margin and ensures
-	 *          ≥6 symbols of preamble remain after worst-case wake.
-	 *
-	 * The original margin of 4 left only ~2 usable symbols — any TCXO
-	 * startup or timer jitter caused missed packets. */
-	uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
-	int16_t margin = 10;
-	int16_t sleep_symbols = (int16_t)preamble_len - margin;
+	uint16_t min_symbols = (sf >= 7) ? LR11XX_DC_MIN_SYMBOLS_SF7_PLUS
+					 : LR11XX_DC_MIN_SYMBOLS_SF6_LESS;
 
-	if (sleep_symbols < 2) {
-		LOG_WRN("Preamble too short for CAD duty cycle (%d sym), "
-			"continuous RX", preamble_len);
+	int16_t sleep_symbols = (int16_t)preamble_len - (int16_t)min_symbols;
+	if (sleep_symbols <= 0) {
+		LOG_WRN("Preamble too short for duty cycle (need >%d, have %d)",
+			min_symbols, preamble_len);
 		data->rx_duty_cycle_enabled = false;
 		lr11xx_radio_set_rx(ctx, 0xFFFFFF);
 		return;
 	}
 
-	/* CAD params: 2 symbols, Semtech det_peak table, auto-RX on detect */
-	uint8_t det_peak = lr11xx_cad_det_peak(sf, mc->bandwidth);
-	lr11xx_radio_cad_params_t cad = {
-		.cad_symb_nb     = 1,       /* enum: 1 = 2 symbols */
-		.cad_detect_peak = det_peak,
-		.cad_detect_min  = 10,
-		.cad_exit_mode   = LR11XX_RADIO_CAD_EXIT_MODE_RX,
-		.cad_timeout     = 0,
-	};
-	lr11xx_radio_set_cad_params(ctx, &cad);
+	uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
 
-	uint32_t sleep_us = (uint16_t)sleep_symbols * symbol_us;
+	/* Shave 2 symbols off sleep for timing margin */
+	int16_t sleep_symbols_safe = sleep_symbols - 2;
+	if (sleep_symbols_safe < 1) {
+		sleep_symbols_safe = 1;
+	}
+	uint32_t sleep_period_us = (uint16_t)sleep_symbols_safe * symbol_us;
 
-	/* RX period: on CAD detect, chip enters RX for (2*rx + sleep).
-	 * Must cover remaining preamble + sync word + header. */
-	uint32_t rx_us = (preamble_len + 1) * symbol_us;
+	uint32_t preamble_total_us = (preamble_len + 1) * symbol_us;
+	int32_t wake_calc1 = ((int32_t)preamble_total_us -
+			      ((int32_t)sleep_period_us - LR11XX_DC_TCXO_DELAY_US)) / 2;
+	uint32_t wake_calc2 = (min_symbols + 1) * symbol_us;
 
-	uint32_t rx_ms = (rx_us + 500) / 1000;
-	uint32_t sleep_ms = (sleep_us + 500) / 1000;
-	if (rx_ms < 1) rx_ms = 1;
-	if (sleep_ms < 1) sleep_ms = 1;
+	uint32_t wake_period_us = (wake_calc1 > 0 && (uint32_t)wake_calc1 > wake_calc2)
+				  ? (uint32_t)wake_calc1 : wake_calc2;
+
+	/* LR1110 API takes milliseconds (converted to RTC steps internally) */
+	uint32_t rx_ms = (wake_period_us + 500) / 1000;
+	uint32_t sleep_ms = (sleep_period_us + 500) / 1000;
+	if (rx_ms < 1) {
+		rx_ms = 1;
+	}
+	if (sleep_ms < 1) {
+		sleep_ms = 1;
+	}
 
 	lr11xx_radio_set_rx_duty_cycle(ctx, rx_ms, sleep_ms,
-				       LR11XX_RADIO_RX_DUTY_CYCLE_MODE_CAD);
+				       LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
 
-	LOG_INF("RX CAD duty cycle: rx=%ums sleep=%ums peak=%u (SF%d BW%.0f)",
-		rx_ms, sleep_ms, det_peak, sf, (double)bw_khz);
+	LOG_INF("RX duty cycle: rx=%ums sleep=%ums (SF%d BW%.0f)",
+		rx_ms, sleep_ms, sf, (double)bw_khz);
 }
 
 /* ── Start RX (internal) ────────────────────────────────────────────── */

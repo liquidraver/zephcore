@@ -143,10 +143,6 @@ void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
 		self->_packets_recv_errors++;
 		LOG_DBG("RX error (CRC/header), total errors: %u",
 			self->_packets_recv_errors);
-		/* Driver restarted with Radio.Rx(0) — restore duty cycle */
-		if (self->_rx_duty_cycle_enabled) {
-			self->hwSetRxDutyCycle(true);
-		}
 		return;
 	}
 
@@ -159,11 +155,6 @@ void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
 	if (next_head == self->_rx_tail) {
 		LOG_WRN("RX ring full, dropping new packet");
 		self->_packets_recv_errors++;
-		/* Still restore duty cycle and notify — main loop should
-		 * drain faster next time. */
-		if (self->_rx_duty_cycle_enabled) {
-			self->hwSetRxDutyCycle(true);
-		}
 		if (self->_rx_cb) {
 			self->_rx_cb(self->_rx_cb_user_data);
 		}
@@ -181,11 +172,6 @@ void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
 	self->_last_rssi = (float)rssi;
 	self->_last_snr = (float)snr;
 	self->_packets_recv++;
-
-	/* Driver restarted with Radio.Rx(0) — restore duty cycle */
-	if (self->_rx_duty_cycle_enabled) {
-		self->hwSetRxDutyCycle(true);
-	}
 
 	if (self->_rx_cb) {
 		self->_rx_cb(self->_rx_cb_user_data);

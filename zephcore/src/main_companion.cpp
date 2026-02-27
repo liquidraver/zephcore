@@ -634,11 +634,9 @@ int main(void)
 		}
 	}
 
-	/* Apply RX boost from prefs.  Duty cycle is disabled — CAD-based
-	 * duty cycling misses weak packets that continuous RX would catch.
-	 * Arduino reference uses continuous RX for all boards. */
+	/* Apply RX boost and duty cycle from prefs */
 	lora_radio.setRxBoost(companion_mesh.prefs.rx_boost != 0);
-	lora_radio.enableRxDutyCycle(false);
+	lora_radio.enableRxDutyCycle(companion_mesh.prefs.rx_duty_cycle != 0);
 
 	/* Initialize mesh event object */
 	k_event_init(&mesh_events);
