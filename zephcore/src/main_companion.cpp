@@ -141,11 +141,21 @@ static void ble_on_connected(void)
 	ui_notify(UI_EVENT_BLE_CONNECTED);
 }
 
-/* BLE disconnected callback — notify UI */
+/* BLE disconnected callback — clean up state and notify UI */
 static void ble_on_disconnected(void)
 {
 #if IS_ENABLED(CONFIG_LOG)
 	zephcore_usb_companion_reset_rx();
+#endif
+#ifdef ZEPHCORE_LORA
+	/* Silently cancel any in-progress contact iteration.
+	 * Without this, reconnect triggers resetContactIterator() which sends
+	 * a stale PACKET_CONTACT_END to the NEW connection, confusing the
+	 * phone's sync state machine. */
+	companion_mesh_ptr->cancelContactIterator();
+	/* Reset message sync — un-ACKed peeked message stays in queue
+	 * and will be re-sent on next CMD_SYNC_NEXT_MESSAGE. */
+	companion_mesh_ptr->cancelSyncPending();
 #endif
 	ui_notify(UI_EVENT_BLE_DISCONNECTED);
 }
@@ -205,8 +215,10 @@ static void rx_process_work_fn(struct k_work *work)
 	/* Process all queued frames */
 	while (k_msgq_get(zephcore_ble_get_recv_queue(), &f, K_NO_WAIT) == 0) {
 #ifdef ZEPHCORE_LORA
-		/* Reset contact iterator when new command received */
-		companion_mesh_ptr->resetContactIterator();
+		/* handleProtocolFrame() resets the contact iterator internally
+		 * (line 1229) for any non-CMD_GET_CONTACTS command — no need
+		 * to call resetContactIterator() here.  Doing so sent a stale
+		 * PACKET_CONTACT_END before the command was even processed. */
 		if (!companion_mesh_ptr->handleProtocolFrame(f.buf, f.len)) {
 			LOG_DBG("rx_process: unknown cmd 0x%02x len=%u", f.buf[0], (unsigned)f.len);
 			uint8_t err_rsp[] = { 0x01, 0x01 };  /* PACKET_ERROR, ERR_UNSUPPORTED */

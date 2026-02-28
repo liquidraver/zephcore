@@ -120,9 +120,10 @@ config ZEPHCORE_MAX_CHANNELS
 
 config ZEPHCORE_OFFLINE_QUEUE_SIZE
 	int "Offline message queue size"
-	default 16
+	default 256
 	help
 	  Size of the offline message queue for incoming messages.
+	  Arduino MeshCore uses 256 for both T1000-E and Wio Tracker.
 
 config ZEPHCORE_ACK_TABLE_SIZE
 	int "ACK tracking table size"

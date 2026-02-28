@@ -162,8 +162,21 @@ public:
 
 	/**
 	 * Reset contact iterator (call when new command received).
+	 * Sends PACKET_CONTACT_END if iteration was in progress.
 	 */
 	void resetContactIterator();
+
+	/**
+	 * Cancel contact iteration silently (no frame sent).
+	 * Call on BLE disconnect — there's nobody to send CONTACT_END to.
+	 */
+	void cancelContactIterator() { _contact_iter_active = false; }
+
+	/**
+	 * Cancel pending message sync. Un-ACKed message stays in queue.
+	 * Call on BLE disconnect so the message is re-sent on reconnect.
+	 */
+	void cancelSyncPending() { _sync_pending = false; }
 
 	/**
 	 * Get BLE device name for advertising.
@@ -270,6 +283,7 @@ private:
 	int _offline_queue_head;
 	int _offline_queue_tail;
 	int _offline_queue_count;
+	bool _sync_pending;  /* true = last peeked message not yet ACKed by phone */
 
 	/* ACK tracking table */
 	struct AckEntry {
@@ -328,6 +342,8 @@ private:
 
 	void queueOfflineMessage(const uint8_t *data, size_t len);
 	bool dequeueOfflineMessage(uint8_t *dest, size_t &len);
+	bool peekOfflineMessage(uint8_t *dest, size_t &len);
+	void confirmOfflineMessage();
 
 	void queueContactMessage(const ContactInfo &contact, mesh::Packet *pkt,
 		uint8_t txt_type, uint32_t sender_timestamp, const uint8_t *extra, int extra_len, const char *text);

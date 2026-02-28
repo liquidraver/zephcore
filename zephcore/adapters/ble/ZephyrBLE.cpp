@@ -121,6 +121,7 @@ static bool dle_requested;
 /* Advertising state */
 static bool adv_switching = false;
 static bool adv_is_slow = false;
+static bool adv_post_disconnect = false;  /* skip fast advert after disconnect */
 
 /* Runtime BLE passkey */
 static uint32_t ble_passkey = CONFIG_ZEPHCORE_BLE_PASSKEY;
@@ -340,6 +341,10 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	k_work_cancel_delayable(&tx_drain_work);
 	k_work_cancel_delayable(&overflow_retry_work);
 
+	/* Skip fast advertising on reconnect — go straight to slow.
+	 * Prevents tight reconnect flapping loops on flaky links. */
+	adv_post_disconnect = true;
+
 	/* Notify main of BLE disconnection */
 	if (ble_cbs && ble_cbs->on_disconnected) {
 		ble_cbs->on_disconnected();
@@ -354,6 +359,16 @@ static void recycled(void)
 			adv_switching, adv_is_slow);
 		return;
 	}
+
+	if (adv_post_disconnect) {
+		/* After disconnect, skip fast advertising — go straight to slow.
+		 * Prevents rapid reconnect flapping on flaky BLE links. */
+		adv_post_disconnect = false;
+		LOG_INF("post-disconnect: starting slow advertising directly");
+		adv_slow_work_fn(NULL);
+		return;
+	}
+
 	LOG_DBG("restart advertising");
 	start_adv();
 }

@@ -158,6 +158,7 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	_offline_queue_head = 0;
 	_offline_queue_tail = 0;
 	_offline_queue_count = 0;
+	_sync_pending = false;
 	memset(_ack_table, 0, sizeof(_ack_table));
 	_ack_next_overwrite = 0;
 	memset(_advert_paths, 0, sizeof(_advert_paths));
@@ -390,6 +391,22 @@ bool CompanionMesh::dequeueOfflineMessage(uint8_t *dest, size_t &len)
 	_offline_queue_head = (_offline_queue_head + 1) % OFFLINE_QUEUE_SIZE;
 	_offline_queue_count--;
 	return true;
+}
+
+bool CompanionMesh::peekOfflineMessage(uint8_t *dest, size_t &len)
+{
+	if (_offline_queue_count == 0) return false;
+	QueuedFrame *f = &_offline_queue[_offline_queue_head];
+	len = f->len;
+	memcpy(dest, f->buf, len);
+	return true;  /* head NOT advanced — message stays in queue */
+}
+
+void CompanionMesh::confirmOfflineMessage()
+{
+	if (_offline_queue_count == 0) return;
+	_offline_queue_head = (_offline_queue_head + 1) % OFFLINE_QUEUE_SIZE;
+	_offline_queue_count--;
 }
 
 void CompanionMesh::resetContactIterator()
@@ -1677,12 +1694,21 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	}
 
 	case CMD_SYNC_NEXT_MESSAGE: {
-		LOG_INF("CMD_SYNC_NEXT_MESSAGE: queue_count=%d", _offline_queue_count);
+		LOG_INF("CMD_SYNC_NEXT_MESSAGE: queue_count=%d pending=%d",
+			_offline_queue_count, _sync_pending);
+
+		/* Phone asking for next = implicit ACK for the previously-peeked message */
+		if (_sync_pending) {
+			confirmOfflineMessage();
+			_sync_pending = false;
+		}
+
 		uint8_t buf[MAX_FRAME_SIZE];
 		size_t msg_len;
-		if (dequeueOfflineMessage(buf, msg_len)) {
-			LOG_INF("CMD_SYNC_NEXT_MESSAGE: dequeued msg_len=%u type=0x%02x", (unsigned)msg_len, buf[0]);
+		if (peekOfflineMessage(buf, msg_len)) {
+			LOG_INF("CMD_SYNC_NEXT_MESSAGE: peeked msg_len=%u type=0x%02x", (unsigned)msg_len, buf[0]);
 			writeFrame(buf, msg_len);
+			_sync_pending = true;  /* will be confirmed on next request or lost on disconnect */
 		} else {
 			LOG_INF("CMD_SYNC_NEXT_MESSAGE: queue empty, sending NO_MORE_MSGS");
 			uint8_t rsp[] = { PACKET_NO_MORE_MSGS };
