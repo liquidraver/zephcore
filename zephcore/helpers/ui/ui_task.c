@@ -11,6 +11,7 @@
  *   KEY_B     → action_flood_advert()    (2 taps, 400ms delayed)
  *   KEY_D     → action_buzzer_toggle()   (3 taps, 400ms delayed)
  *   KEY_C     → action_gps_toggle()      (4 taps, immediate)
+ *   KEY_G     → GPS switch on/off        (hardware toggle, ThinkNode M1)
  *   KEY_POWER  → action_deep_sleep()      (long press ≥1s)
  *   KEY_RIGHT  → action_page_next()       (joystick, Wio Tracker)
  *   KEY_LEFT   → action_page_prev()       (joystick, Wio Tracker)
@@ -109,7 +110,8 @@ static struct ui_state local_ui_state;
 
 /* ========== Constants ========== */
 #define SPLASH_DURATION_MS  3000
-#define RENDER_DEBOUNCE_MS  50
+#define RENDER_DEBOUNCE_MS      50
+#define RENDER_DEBOUNCE_EPD_MS  2500  /* e-paper: coalesce updates across full refresh (~2s) */
 
 /* ========== State ========== */
 static bool ui_initialized;
@@ -243,7 +245,9 @@ static void advert_defer_handler(struct k_work *work)
 static void schedule_render(void)
 {
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-	k_work_reschedule(&render_work, K_MSEC(RENDER_DEBOUNCE_MS));
+	uint32_t debounce = mc_display_is_epd() ? RENDER_DEBOUNCE_EPD_MS
+						 : RENDER_DEBOUNCE_MS;
+	k_work_reschedule(&render_work, K_MSEC(debounce));
 #endif
 }
 
@@ -590,6 +594,22 @@ static void ui_input_cb(struct input_event *evt, void *user_data)
 		return;
 	}
 #endif
+
+	/* GPS hardware switch (toggle switch, not momentary button).
+	 * Needs both press (ON) and release (OFF) events,
+	 * so handle before the release-event filter below. */
+	if (evt->code == INPUT_KEY_G) {
+		bool gps_on = (evt->value != 0);
+		LOG_INF("GPS switch → %s", gps_on ? "on" : "off");
+		if (gps_is_available()) {
+			mesh_gps_set_enabled(gps_on);
+#ifdef CONFIG_ZEPHCORE_UI_BUZZER
+			buzzer_play(gps_on ? MELODY_GPS_ON : MELODY_GPS_OFF);
+#endif
+			schedule_render();
+		}
+		return;
+	}
 
 	/* Only handle key press events (value=1), not releases (value=0) */
 	if (!evt->value) {

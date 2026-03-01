@@ -1,0 +1,9 @@
+# Copyright (c) 2025 ZephCore
+# SPDX-License-Identifier: Apache-2.0
+
+board:
+  name: thinknode_m1
+  full_name: Elecrow ThinkNode M1 (nRF52840 + SX1262 + SSD1681 EPD)
+  vendor: elecrow
+  socs:
+    - name: nrf52840

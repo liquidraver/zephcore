@@ -150,10 +150,8 @@
  *   rx-enable-gpios          — Separate RXEN pin (Wio-SX1262 needs both)
  *
  * TCXO (if your module has one):
- *   dio3-tcxo-voltage        — DIO3 provides TCXO power
- *   Values: 0=1.6V, 1=1.7V, 2=1.8V, 3=2.2V, 4=2.4V, 5=2.7V, 6=3.0V, 7=3.3V
- *   Or use named constants from sx126x.h:
- *     SX126X_DIO3_TCXO_1V6 .. SX126X_DIO3_TCXO_3V3
+ *   dio3-tcxo-voltage        — DIO3 provides TCXO power (use 1.8V)
+ *   Use: SX126X_DIO3_TCXO_1V8  (from sx126x.h)
  *
  * rx-boosted                — Better RX sensitivity (slight power increase)
  *
@@ -205,7 +203,7 @@
  *         dio1-gpios = <&gpio1 5 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
  *         rx-enable-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
  *         dio2-tx-enable;
- *         dio3-tcxo-voltage = <6>;
+ *         dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
  *         tcxo-power-startup-delay-ms = <10>;
  *         rx-boosted;
  *     };
@@ -231,7 +229,7 @@
  *         dio1-gpios = <&gpioc 1 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
  *         rx-enable-gpios = <&gpioc 5 GPIO_ACTIVE_HIGH>;
  *         dio2-tx-enable;
- *         dio3-tcxo-voltage = <6>;
+ *         dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
  *         tcxo-power-startup-delay-ms = <10>;
  *         rx-boosted;
  *     };
@@ -255,7 +253,7 @@
  *         dio1-gpios = <&gpio0 3 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
  *         rx-enable-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
  *         dio2-tx-enable;
- *         dio3-tcxo-voltage = <6>;
+ *         dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
  *         tcxo-power-startup-delay-ms = <10>;
  *         rx-boosted;
  *     };

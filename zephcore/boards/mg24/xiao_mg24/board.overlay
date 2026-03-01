@@ -14,6 +14,8 @@
  * WARNING: Default I2C0 uses PC4/PC5 (D4/D5) — must be disabled for LoRa!
  */
 
+#include <zephyr/dt-bindings/lora/sx126x.h>
+
 / {
 	aliases {
 		lora0 = &lora;
@@ -48,8 +50,8 @@
 		rx-enable-gpios = <&gpioc 5 GPIO_ACTIVE_HIGH>;  /* D5 = PC05 RXEN */
 		dio2-tx-enable;
 
-		/* TCXO 1.8V via DIO3 (SX126X_DIO3_TCXO_1V8 = 0x02) */
-		dio3-tcxo-voltage = <2>;
+		/* TCXO 1.8V via DIO3 */
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
 		tcxo-power-startup-delay-ms = <10>;
 
 		/* RX boosted mode for better sensitivity */

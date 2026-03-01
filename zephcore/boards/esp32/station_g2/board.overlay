@@ -12,6 +12,8 @@
  * Button:          GPIO38
  */
 
+#include <zephyr/dt-bindings/lora/sx126x.h>
+
 / {
 	aliases {
 		lora0 = &lora;
@@ -49,8 +51,8 @@
 		/* DIO2 controls RF switch for TX */
 		dio2-tx-enable;
 
-		/* TCXO 1.8 V via DIO3 (value 2 = 1.8 V in Zephyr SX126x driver) */
-		dio3-tcxo-voltage = <2>;
+		/* TCXO 1.8V via DIO3 */
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
 		tcxo-power-startup-delay-ms = <10>;
 
 		rx-boosted;

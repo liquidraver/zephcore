@@ -50,6 +50,11 @@ static void auto_off_handler(struct k_work *work)
 	if (doom_game_is_running()) {
 		return;
 	}
+	/* E-paper uses zero power when static — blanking wastes a full
+	 * refresh cycle (~2s) and leaves the screen blank for no benefit. */
+	if (is_epd) {
+		return;
+	}
 	if (disp_on) {
 		mc_display_off();
 	}
@@ -225,6 +230,11 @@ void mc_display_off(void)
 bool mc_display_is_on(void)
 {
 	return disp_on;
+}
+
+bool mc_display_is_epd(void)
+{
+	return is_epd;
 }
 
 void mc_display_clear(void)

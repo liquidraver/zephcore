@@ -76,6 +76,13 @@ void mc_display_off(void);
 bool mc_display_is_on(void);
 
 /**
+ * @return true if the display is an e-paper (EPD) type.
+ * EPD displays have slow refresh (~2s) and use zero power when static,
+ * so callers should use longer update intervals and skip blanking.
+ */
+bool mc_display_is_epd(void);
+
+/**
  * Clear the framebuffer (fill with black).
  * Call before rendering a new frame.
  */

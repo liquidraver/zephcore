@@ -12,6 +12,8 @@
  * Console: USB-Serial/JTAG (usb_serial)
  */
 
+#include <zephyr/dt-bindings/lora/sx126x.h>
+
 / {
 	aliases {
 		lora0 = &lora;
@@ -51,7 +53,7 @@
 		dio2-tx-enable;
 
 		/* TCXO 1.8V via DIO3 */
-		dio3-tcxo-voltage = <2>;
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
 		tcxo-power-startup-delay-ms = <10>;
 
 		/* RX boosted mode for better sensitivity */

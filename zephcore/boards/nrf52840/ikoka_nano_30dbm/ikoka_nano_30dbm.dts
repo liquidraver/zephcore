@@ -22,6 +22,7 @@
 #include <nordic/nrf52840_qiaa.dtsi>
 #include "ikoka_nano_30dbm-pinctrl.dtsi"
 #include <zephyr/dt-bindings/adc/nrf-saadc.h>
+#include <zephyr/dt-bindings/lora/sx126x.h>
 
 / {
 	model = "Ikoka Nano 30dBm";
@@ -152,7 +153,7 @@
 		dio2-tx-enable;
 
 		/* TCXO voltage 1.8V */
-		dio3-tcxo-voltage = <6>;
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
 		tcxo-power-startup-delay-ms = <10>;
 
 		/* Enable RX boosted mode for better sensitivity */
