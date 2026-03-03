@@ -443,14 +443,14 @@ config ZEPHCORE_UI_BUZZER
 
 config ZEPHCORE_UI_DISPLAY
 	bool "Enable display (OLED, LCD, e-ink)"
-	default y
-	depends on DISPLAY
-	depends on CHARACTER_FRAMEBUFFER
+	default y if $(dt_chosen_enabled,zephyr/display)
+	select DISPLAY
+	select CHARACTER_FRAMEBUFFER
 	help
 	  Enable page-based UI on any Zephyr-supported display.
-	  Auto-detects display via "zephyr,display" chosen node or
-	  legacy nodelabels (sh1106, ssd1306). Resolution and font
-	  are queried at runtime — no hardcoded dimensions.
+	  Auto-enabled when "zephyr,display" chosen node exists in DT.
+	  Auto-detects display via chosen node or legacy nodelabels
+	  (sh1106, ssd1306). Resolution and font are queried at runtime.
 	  Supports OLED (SSD1306, SH1106), LCD, e-ink, etc.
 
 config ZEPHCORE_UI_DISPLAY_AUTO_OFF_MS

@@ -4,14 +4,14 @@
  *
  * Universal mount strategy:
  *   nRF52:  Manual mount /efs (ExtraFS, 100KB) + /ifs (InternalFS, 28KB)
- *           with block_size=128 and custom erase for Arduino MeshCore compat.
+ *           using native Zephyr LittleFS (block_size=4096).
  *   Others: DTS-automounted /lfs (single partition).
  *   QSPI:   /ext overrides contacts mount when available.
  *
  * Data format (all platforms):
- *   contacts3   — 152-byte records (Arduino-compatible)
- *   new_prefs   — Arduino-compatible byte layout
- *   channels2   — 68-byte records (identical to Arduino)
+ *   contacts3   — 152-byte records
+ *   new_prefs   — byte layout
+ *   channels2   — 68-byte records
  *   _main.id    — identity blob
  *   adv_blobs   — fixed record array
  */
@@ -22,9 +22,6 @@
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/device.h>
 #include <string.h>
-
-/* Custom 128B-block erase — defined in lfs_128b_erase.c */
-extern "C" int lfs_128b_erase(const struct lfs_config *c, lfs_block_t block);
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(zephcore_datastore, CONFIG_ZEPHCORE_DATASTORE_LOG_LEVEL);
@@ -56,27 +53,14 @@ static bool is_mounted(const char *mount_point)
 	return fs_statvfs(mount_point, &stat) == 0;
 }
 
-/* ── nRF52 dual-mount: ExtraFS + InternalFS (block_size=128) ───────── */
+/* ── nRF52 dual-mount: ExtraFS + InternalFS ────────────────────────── */
 
 #if FIXED_PARTITION_EXISTS(extrafs_partition) && FIXED_PARTITION_EXISTS(internalfs_partition)
 #define HAS_NRF52_DUAL_MOUNT 1
 
-/* Arduino-compatible LFS: block_size=128 */
-FS_LITTLEFS_DECLARE_CUSTOM_CONFIG(extrafs_data,
-	4,    /* alignment */
-	16,   /* read_size */
-	16,   /* prog_size */
-	128,  /* cache_size = block_size */
-	128   /* lookahead_size */
-);
-
-FS_LITTLEFS_DECLARE_CUSTOM_CONFIG(internalfs_data,
-	4,    /* alignment */
-	16,   /* read_size */
-	16,   /* prog_size */
-	128,  /* cache_size = block_size */
-	128   /* lookahead_size */
-);
+/* Native Zephyr LFS — block_size derived from flash erase size (4096). */
+FS_LITTLEFS_DECLARE_DEFAULT_CONFIG(extrafs_data);
+FS_LITTLEFS_DECLARE_DEFAULT_CONFIG(internalfs_data);
 
 static struct fs_mount_t extrafs_mnt = {
 	.type = FS_LITTLEFS,
@@ -94,53 +78,56 @@ static struct fs_mount_t internalfs_mnt = {
 	.flags = 0,
 };
 
+/* Mount a LittleFS partition, format if mount fails.  Returns the mount rc. */
+static int mount_or_format(struct fs_mount_t *mnt, int partition_id)
+{
+	int rc = fs_mount(mnt);
+
+	if (rc < 0) {
+		LOG_WRN("%s: mount failed (%d) — formatting", mnt->mnt_point, rc);
+
+		/* A failed fs_mount may leave fs->backend set (flash_area
+		 * opened in littlefs_init_backend but lfs_mount failed).
+		 * Clear it so the retry doesn't hit -EBUSY. */
+		struct fs_littlefs *fsd = (struct fs_littlefs *)mnt->fs_data;
+		if (fsd->backend) {
+			flash_area_close((const struct flash_area *)fsd->backend);
+			fsd->backend = NULL;
+		}
+
+		const struct flash_area *fap;
+		if (flash_area_open(partition_id, &fap) == 0) {
+			flash_area_flatten(fap, 0, fap->fa_size);
+			flash_area_close(fap);
+		}
+		rc = fs_mount(mnt);
+		if (rc < 0) {
+			LOG_ERR("%s: mount failed after format: %d",
+				mnt->mnt_point, rc);
+		}
+	}
+	return rc;
+}
+
 static bool try_mount_nrf52_dual()
 {
-	int rc;
-
-	/* Set custom block_size and erase callback before mount.
-	 * The Zephyr LFS patch (0007) preserves pre-set erase callbacks. */
-	extrafs_data.cfg.block_size = 128;
-	extrafs_data.cfg.erase = lfs_128b_erase;
-
-	internalfs_data.cfg.block_size = 128;
-	internalfs_data.cfg.erase = lfs_128b_erase;
-
 	/* Mount ExtraFS — contacts, channels, blobs */
-	rc = fs_mount(&extrafs_mnt);
-	if (rc < 0) {
-		LOG_ERR("ExtraFS mount failed: %d — formatting", rc);
-		const struct flash_area *fap;
-		if (flash_area_open(FIXED_PARTITION_ID(extrafs_partition), &fap) == 0) {
-			flash_area_flatten(fap, 0, fap->fa_size);
-			flash_area_close(fap);
-		}
-		rc = fs_mount(&extrafs_mnt);
-		if (rc < 0) {
-			LOG_ERR("ExtraFS mount failed after format: %d", rc);
-			return false;
-		}
+	if (mount_or_format(&extrafs_mnt,
+			    FIXED_PARTITION_ID(extrafs_partition)) < 0) {
+		return false;
 	}
 	efs_mounted = true;
-	LOG_INF("ExtraFS at /efs (100KB, 128B blocks)");
+	LOG_INF("ExtraFS at /efs: blk_sz=%u blk_cnt=%u",
+		extrafs_data.cfg.block_size, extrafs_data.cfg.block_count);
 
 	/* Mount InternalFS — prefs, identity, BLE settings */
-	rc = fs_mount(&internalfs_mnt);
-	if (rc < 0) {
-		LOG_ERR("InternalFS mount failed: %d — formatting", rc);
-		const struct flash_area *fap;
-		if (flash_area_open(FIXED_PARTITION_ID(internalfs_partition), &fap) == 0) {
-			flash_area_flatten(fap, 0, fap->fa_size);
-			flash_area_close(fap);
-		}
-		rc = fs_mount(&internalfs_mnt);
-		if (rc < 0) {
-			LOG_ERR("InternalFS mount failed after format: %d", rc);
-			return false;
-		}
+	if (mount_or_format(&internalfs_mnt,
+			    FIXED_PARTITION_ID(internalfs_partition)) < 0) {
+		return false;
 	}
 	ifs_mounted = true;
-	LOG_INF("InternalFS at /ifs (28KB, 128B blocks)");
+	LOG_INF("InternalFS at /ifs: blk_sz=%u blk_cnt=%u",
+		internalfs_data.cfg.block_size, internalfs_data.cfg.block_count);
 
 	return true;
 }
@@ -158,7 +145,7 @@ bool ZephyrDataStore::mount()
 		return true;  /* already mounted */
 	}
 
-	/* 1. Try nRF52 dual-mount (manual, block_size=128) */
+	/* 1. Try nRF52 dual-mount (manual, native block_size) */
 	if (try_mount_nrf52_dual()) {
 		_contacts_mnt = "/efs";
 		_prefs_mnt = "/ifs";

@@ -209,7 +209,8 @@
 			reg = <0>;
 			width = <200>;
 			height = <200>;
-			rotation = <270>;
+			rotation = <0>;
+			gate-inverted;
 			busy-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
 		};
 	};

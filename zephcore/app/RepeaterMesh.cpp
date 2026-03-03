@@ -137,7 +137,7 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
         memcpy(client->shared_secret, secret, PUB_KEY_SIZE);
 
         if (perms != PERM_ACL_GUEST) {
-            dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+            if (!dirty_contacts_expiry) dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
         }
     }
 
@@ -1018,7 +1018,7 @@ void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char*
             if (hex_len > PUB_KEY_SIZE * 2) hex_len = PUB_KEY_SIZE * 2;
             if (mesh::Utils::fromHex(pubkey, hex_len / 2, hex)) {
                 if (acl.applyPermissions(self_id, pubkey, hex_len / 2, perms)) {
-                    dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+                    if (!dirty_contacts_expiry) dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
                     strcpy(reply, "OK");
                 } else {
                     strcpy(reply, "Err - invalid params");

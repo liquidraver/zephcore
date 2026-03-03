@@ -82,6 +82,13 @@
 		 */
 
 		/* --- Display (uncomment if board has OLED/LCD/e-paper) ---
+		 * Setting zephyr,display auto-enables CONFIG_DISPLAY,
+		 * CONFIG_CHARACTER_FRAMEBUFFER, and the UI page system.
+		 * No board.conf changes needed.
+		 * HEAP: 128x64 OLEDs fit in the default 2KB heap.
+		 *       Larger displays need CONFIG_HEAP_MEM_POOL_SIZE
+		 *       override in board.conf (e.g. 6144 for 200x200 EPD).
+		 *
 		 * zephyr,display = &oled;       I2C OLED (SH1106, SSD1306)
 		 * zephyr,display = &epd;        SPI e-paper (SSD1681, etc.)
 		 */

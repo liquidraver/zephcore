@@ -73,9 +73,12 @@ static void auto_off_handler(struct k_work *work)
 		return;
 	}
 	/* E-paper content persists without power — blanking wastes a full
-	 * refresh cycle (~2s) for no benefit.  Just turn off the backlight. */
+	 * refresh cycle (~2s) for no benefit.  Just turn off the backlight
+	 * and mark display "off" so the next button press triggers
+	 * mc_display_on() → backlight restore. */
 	if (is_epd) {
 		backlight_set(false);
+		disp_on = false;
 		return;
 	}
 	if (disp_on) {
@@ -232,7 +235,11 @@ void mc_display_on(void)
 	}
 
 	if (!disp_on) {
-		display_blanking_off(disp_dev);
+		/* EPD: content persists (bistable) — no need to unblank,
+		 * just restore backlight.  OLED: actually unblank. */
+		if (!is_epd) {
+			display_blanking_off(disp_dev);
+		}
 		disp_on = true;
 	}
 	backlight_set(true);

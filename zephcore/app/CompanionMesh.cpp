@@ -267,12 +267,18 @@ void CompanionMesh::loop()
 
 void CompanionMesh::markContactsDirty()
 {
-	_dirty_contacts_expiry = _ms->getMillis() + LAZY_WRITE_DELAY_MS;
+	/* Only set the timer on first dirty — don't keep pushing
+	 * the deadline forward or a busy mesh never flushes. */
+	if (!_dirty_contacts_expiry) {
+		_dirty_contacts_expiry = _ms->getMillis() + LAZY_WRITE_DELAY_MS;
+	}
 }
 
 void CompanionMesh::markChannelsDirty()
 {
-	_dirty_channels_expiry = _ms->getMillis() + LAZY_WRITE_DELAY_MS;
+	if (!_dirty_channels_expiry) {
+		_dirty_channels_expiry = _ms->getMillis() + LAZY_WRITE_DELAY_MS;
+	}
 }
 
 void CompanionMesh::flushDirtyContacts()

@@ -114,7 +114,7 @@ static struct ui_state local_ui_state;
 /* ========== Constants ========== */
 #define SPLASH_DURATION_MS  3000
 #define RENDER_DEBOUNCE_MS      50
-#define RENDER_DEBOUNCE_EPD_MS  2500  /* e-paper: coalesce updates across full refresh (~2s) */
+#define RENDER_DEBOUNCE_EPD_MS  200   /* e-paper: coalesce rapid state updates, then refresh */
 
 /* ========== State ========== */
 static bool ui_initialized;
@@ -1038,6 +1038,7 @@ void ui_refresh_display(void)
 		return;
 	}
 
+#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
 	/* EPD displays: skip periodic housekeeping renders.
 	 * Each full e-paper refresh takes ~2s and causes visible flashing.
 	 * All meaningful events (messages, BLE, GPS fix, button presses)
@@ -1049,4 +1050,5 @@ void ui_refresh_display(void)
 	}
 
 	schedule_render();
+#endif
 }

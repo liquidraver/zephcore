@@ -1,0 +1,9 @@
+# Copyright (c) 2025 ZephCore
+# SPDX-License-Identifier: Apache-2.0
+
+board:
+  name: rak_wismesh_tag
+  full_name: RAK WisMesh Tag (nRF52840 + SX1262 GPS Tracker)
+  vendor: rak
+  socs:
+    - name: nrf52840

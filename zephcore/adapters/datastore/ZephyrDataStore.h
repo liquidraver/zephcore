@@ -3,9 +3,9 @@
  * Zephyr DataStore - LittleFS-backed persistence with optional QSPI flash
  *
  * Universal across all platforms (nRF52, ESP32, MG24, nRF54L).
- * On nRF52, uses Arduino MeshCore-compatible dual-mount layout:
- *   /efs (ExtraFS @ 0xD4000, 100KB, block_size=128) — contacts3, channels2, blobs
- *   /ifs (InternalFS @ 0xED000, 28KB, block_size=128) — new_prefs, _main.id
+ * On nRF52, uses dual-mount layout with native Zephyr LittleFS:
+ *   /efs (ExtraFS @ 0xD4000, 100KB) — contacts3, channels2, blobs
+ *   /ifs (InternalFS @ 0xED000, 28KB) — new_prefs, _main.id
  * On other platforms, uses DTS-automounted /lfs for everything.
  * QSPI /ext overrides contacts path when available (any platform).
  */

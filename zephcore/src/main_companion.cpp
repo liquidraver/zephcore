@@ -485,6 +485,21 @@ int main(void)
 	k_sleep(K_MSEC(100));
 	LOG_INF("=== ZephCore starting ===");
 
+	/* Log reset reason so we can diagnose random reboots */
+	{
+		uint32_t cause;
+		if (hwinfo_get_reset_cause(&cause) == 0) {
+			LOG_INF("Reset cause: 0x%08x%s%s%s%s%s%s", cause,
+				(cause & RESET_PIN)       ? " PIN"       : "",
+				(cause & RESET_SOFTWARE)  ? " SOFTWARE"  : "",
+				(cause & RESET_BROWNOUT)  ? " BROWNOUT"  : "",
+				(cause & RESET_POR)       ? " POR"       : "",
+				(cause & RESET_WATCHDOG)  ? " WATCHDOG"  : "",
+				(cause & RESET_CPU_LOCKUP)? " LOCKUP"    : "");
+			hwinfo_clear_reset_cause();
+		}
+	}
+
 	if (!ZephyrDataStore::mount()) {
 		LOG_ERR("LittleFS mount failed");
 	}
