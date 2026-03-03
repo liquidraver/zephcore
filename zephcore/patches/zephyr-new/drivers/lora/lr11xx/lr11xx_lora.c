@@ -818,6 +818,44 @@ uint32_t lr11xx_get_random(const struct device *dev)
 	return random;
 }
 
+void lr11xx_reset_agc(const struct device *dev)
+{
+	struct lr11xx_data *data = dev->data;
+
+	k_mutex_lock(&data->spi_mutex, K_FOREVER);
+
+	/* Warm sleep — powers down analog frontend (resets AGC gain state) */
+	lr11xx_system_sleep_cfg_t sleep_cfg = {
+		.is_warm_start = true,
+		.is_rtc_timeout = false,
+	};
+	lr11xx_system_set_sleep(&data->hal_ctx, sleep_cfg, 0);
+	k_sleep(K_USEC(500));
+
+	/* Wake to STDBY_RC for calibration */
+	lr11xx_system_set_standby(&data->hal_ctx, LR11XX_SYSTEM_STANDBY_CFG_RC);
+
+	/* Recalibrate all blocks */
+	lr11xx_system_calibrate(&data->hal_ctx, 0x3F);
+
+	/* Re-calibrate image rejection for the actual operating frequency */
+	if (data->configured) {
+		uint16_t freq_mhz = data->modem_cfg.frequency / 1000000;
+		lr11xx_system_calibrate_image_in_mhz(&data->hal_ctx,
+						     freq_mhz - 4, freq_mhz + 4);
+	}
+
+	/* Re-apply RX boost if it was enabled */
+	if (data->rx_boost_enabled) {
+		lr11xx_radio_cfg_rx_boosted(&data->hal_ctx, true);
+		lr11xx_system_clear_irq_status(&data->hal_ctx,
+					       LR11XX_SYSTEM_IRQ_ALL_MASK);
+		data->rx_boost_applied = true;
+	}
+
+	k_mutex_unlock(&data->spi_mutex);
+}
+
 /* ── Deferred hardware init (runs on first lora_config call) ────────── */
 
 static int lr11xx_hw_init(struct lr11xx_data *data,

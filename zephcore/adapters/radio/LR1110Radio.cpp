@@ -91,7 +91,8 @@ void LR1110Radio::hwSetRxDutyCycle(bool enable)
 
 void LR1110Radio::hwResetAGC()
 {
-	/* LR1110 doesn't have the same AGC issues as SX126x */
+	/* Warm sleep → Calibrate(ALL) → re-calibrate image → re-apply RX boost */
+	lr11xx_reset_agc(_dev);
 }
 
 } /* namespace mesh */

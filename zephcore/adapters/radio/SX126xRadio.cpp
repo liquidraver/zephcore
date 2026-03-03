@@ -91,10 +91,8 @@ void SX126xRadio::hwSetRxDutyCycle(bool enable)
 
 void SX126xRadio::hwResetAGC()
 {
-	if (_in_recv_mode && !isReceiving()) {
-		hwCancelReceive();
-		startReceive();
-	}
+	/* Warm sleep → Calibrate(ALL) → re-calibrate image → re-apply RX settings */
+	sx126x_reset_agc(_dev);
 }
 
 } /* namespace mesh */

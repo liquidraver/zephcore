@@ -73,6 +73,19 @@ void lr11xx_set_rx_boost(const struct device *dev, bool enable);
  */
 uint32_t lr11xx_get_random(const struct device *dev);
 
+/**
+ * @brief Reset AGC by performing warm sleep + full recalibration
+ *
+ * Warm sleep powers down the analog frontend (resets AGC gain state),
+ * then Calibrate(0x3F) refreshes all blocks. Re-applies image
+ * calibration for the operating frequency and RX boost afterward.
+ *
+ * Must be called while NOT actively receiving a packet.
+ *
+ * @param dev LoRa device
+ */
+void lr11xx_reset_agc(const struct device *dev);
+
 #ifdef __cplusplus
 }
 #endif

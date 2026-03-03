@@ -11,10 +11,14 @@
 
 #include <zephyr/drivers/lora.h>
 
-/* --- Noise floor calibration --- */
-#define NUM_NOISE_FLOOR_SAMPLES          64
+/* --- Noise floor calibration (EMA) ---
+ * Single RSSI sample per tick, smoothed with exponential moving average.
+ * alpha = 1/8 (bit-shiftable): new_floor = floor + (sample - floor) / 8
+ * Convergence: ~8 ticks (~40s at 5s housekeeping) to track a step change.
+ * Samples above floor + SAMPLING_THRESHOLD are rejected (interference). */
+#define NOISE_FLOOR_EMA_SHIFT            3   /* alpha = 1 / (1 << 3) = 1/8 */
 #define NOISE_FLOOR_SAMPLING_THRESHOLD   14  /* only sample if rssi < floor + threshold */
-#define DEFAULT_NOISE_FLOOR              0   /* first calibration accepts all samples */
+#define DEFAULT_NOISE_FLOOR              0   /* accept all samples until first update */
 
 /* --- RX ring buffer ---
  * 8 slots buffer ~40ms+ of back-to-back arrivals at SF7/BW500.

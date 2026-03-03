@@ -510,33 +510,49 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 		return;
 	}
 
-	int64_t start = k_uptime_get();
-	int sum = 0;
-	int count = 0;
-	for (int i = 0; i < NUM_NOISE_FLOOR_SAMPLES; i++) {
-		if (isReceiving()) {
-			break;
-		}
-		int16_t rssi = hwGetCurrentRSSI();
-		if (rssi < _noise_floor + NOISE_FLOOR_SAMPLING_THRESHOLD) {
-			sum += rssi;
-			count++;
-		}
+	/* Skip if mid-receive — don't want signal energy in the floor. */
+	if (isReceiving()) {
+		return;
 	}
-	int64_t elapsed = k_uptime_get() - start;
 
-	if (count >= NUM_NOISE_FLOOR_SAMPLES / 2) {
-		_noise_floor = sum / count;
+	int16_t rssi = hwGetCurrentRSSI();
+
+	/* First sample after reset (DEFAULT_NOISE_FLOOR == 0): seed directly. */
+	if (_noise_floor == DEFAULT_NOISE_FLOOR) {
+		_noise_floor = rssi;
 		if (_noise_floor < -120) _noise_floor = -120;
 		if (_noise_floor > -50) _noise_floor = -50;
+		LOG_DBG("noise_floor_cal: seed=%d", _noise_floor);
+		return;
 	}
-	LOG_DBG("noise_floor_cal: %d samples/%d total, floor=%d, took %lld ms",
-		count, NUM_NOISE_FLOOR_SAMPLES, _noise_floor, elapsed);
+
+	/* Reject samples above floor + threshold (interference / signal). */
+	if (rssi >= _noise_floor + NOISE_FLOOR_SAMPLING_THRESHOLD) {
+		return;
+	}
+
+	/* EMA: floor += (sample - floor) >> SHIFT.  Integer-only. */
+	_noise_floor += (rssi - _noise_floor) >> NOISE_FLOOR_EMA_SHIFT;
+	if (_noise_floor < -120) _noise_floor = -120;
+	if (_noise_floor > -50) _noise_floor = -50;
+
+	LOG_DBG("noise_floor_cal: rssi=%d, floor=%d", rssi, _noise_floor);
 }
 
 void LoRaRadioBase::resetAGC()
 {
+	/* Don't reset AGC while actively receiving a packet — warm sleep would
+	 * corrupt it.  The Dispatcher will retry next interval. */
+	if (isReceiving()) {
+		return;
+	}
+
 	hwResetAGC();
+
+	/* Reset noise floor sampling so it reconverges from scratch.
+	 * Without this, a stuck _noise_floor of -120 makes the sampling threshold
+	 * too low to accept normal samples, self-reinforcing the stuck value. */
+	_noise_floor = DEFAULT_NOISE_FLOOR;
 }
 
 bool LoRaRadioBase::isReceiving()

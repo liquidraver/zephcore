@@ -571,7 +571,12 @@ void ZephyrDataStore::loadPrefs(NodePrefs &prefs)
 	off += 4;
 	prefs.autoadd_config = buf[off++];
 
-	/* Offset 91: rx_boost (ZephCore extension — Arduino stops at 91 bytes) */
+	/* Offset 91: autoadd_max_hops (matches Arduino layout) */
+	if (off < len) {
+		prefs.autoadd_max_hops = buf[off++];
+	}
+
+	/* Offset 92: rx_boost (ZephCore extension — Arduino stops at 92 bytes) */
 	if (off < len) {
 		prefs.rx_boost = buf[off++];
 	} else {
@@ -621,9 +626,11 @@ void ZephyrDataStore::savePrefs(const NodePrefs &prefs)
 	memcpy(&buf[off], &prefs.gps_interval, sizeof(uint32_t));
 	off += 4;
 	buf[off++] = prefs.autoadd_config;
-	/* Offset 91: rx_boost (ZephCore extension — Arduino ignores) */
+	/* Offset 91: autoadd_max_hops (matches Arduino layout) */
+	buf[off++] = prefs.autoadd_max_hops;
+	/* Offset 92: rx_boost (ZephCore extension — Arduino ignores) */
 	buf[off++] = prefs.rx_boost;
-	/* Total: 92 bytes (Arduino reads 91, ZephCore reads 92) */
+	/* Total: 93 bytes (Arduino reads 92, ZephCore reads 93) */
 
 	bool ok = openWrite(prefsFile(), buf, off);
 	LOG_INF("savePrefs: wrote %s, ok=%d (%d bytes), name='%.16s'",

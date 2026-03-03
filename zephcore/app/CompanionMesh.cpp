@@ -1171,6 +1171,11 @@ bool CompanionMesh::shouldOverwriteWhenFull() const
 	return (prefs.autoadd_config & AUTO_ADD_OVERWRITE_OLDEST) != 0;
 }
 
+uint8_t CompanionMesh::getAutoAddMaxHops() const
+{
+	return prefs.autoadd_max_hops;
+}
+
 void CompanionMesh::onContactsFull()
 {
 	sendPush(PUSH_CODE_CONTACTS_FULL);
@@ -2538,16 +2543,21 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	case CMD_SET_AUTOADD_CONFIG:
 		if (len >= 2) {
 			prefs.autoadd_config = data[1];
-			LOG_INF("SET_AUTOADD_CONFIG: autoadd_config=0x%02x", prefs.autoadd_config);
+			if (len >= 3) {
+				prefs.autoadd_max_hops = (data[2] > 64) ? 64 : data[2];
+			}
+			LOG_INF("SET_AUTOADD_CONFIG: autoadd_config=0x%02x max_hops=%u",
+				prefs.autoadd_config, prefs.autoadd_max_hops);
 			_store->savePrefs(prefs);
 		}
 		sendPacketOk();
 		return true;
 
 	case CMD_GET_AUTOADD_CONFIG: {
-		uint8_t rsp[2];
+		uint8_t rsp[3];
 		rsp[0] = PACKET_AUTOADD_CONFIG;
 		rsp[1] = prefs.autoadd_config;
+		rsp[2] = prefs.autoadd_max_hops;
 		writeFrame(rsp, sizeof(rsp));
 		return true;
 	}

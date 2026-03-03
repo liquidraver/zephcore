@@ -61,6 +61,19 @@ void sx126x_set_rx_duty_cycle(const struct device *dev, bool enable);
  */
 void sx126x_set_rx_boost(const struct device *dev, bool enable);
 
+/**
+ * @brief Reset AGC by performing warm sleep + full recalibration
+ *
+ * Warm sleep powers down the analog frontend (resets AGC gain state),
+ * then Calibrate(0x7F) refreshes all blocks (ADC, PLL, image, oscillators).
+ * Re-applies DIO2 RF switch, RX boosted gain, and image calibration afterward.
+ *
+ * Must be called while NOT actively receiving a packet.
+ *
+ * @param dev LoRa device
+ */
+void sx126x_reset_agc(const struct device *dev);
+
 #ifdef __cplusplus
 }
 #endif

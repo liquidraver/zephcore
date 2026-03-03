@@ -252,6 +252,7 @@ protected:
 	bool isAutoAddEnabled() const override;
 	bool shouldAutoAddContactType(uint8_t type) const override;
 	bool shouldOverwriteWhenFull() const override;
+	uint8_t getAutoAddMaxHops() const override;
 	void onContactsFull() override;
 	void onContactOverwrite(const uint8_t *pub_key) override;
 
