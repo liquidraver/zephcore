@@ -2,31 +2,6 @@
 
 A port of [MeshCore](https://github.com/meshcore-dev/MeshCore/) LoRa mesh firmware from Arduino to [Zephyr RTOS](https://zephyrproject.org/). Aiming for full protocol compatibility with the original Arduino firmware and the MeshCore mobile apps.
 
-DISCLAIMER:
-I did this to be a PoC for my Wio Tracker and nRF repeater.
-The porting flow was this:
-- Copy the meshcore companion source and hit it with a hammer named Claude until the FW works on the node
-- if the FW is stable, hit it until it works with the official app
-- if both goal is reached, hit the repeater fw and make it work exactly like the arduino counterpart
-- Add T1000 and make LR1110 work
-- try to fix a thousand bugs that the hammering did
-- Add new boards that doesn't even work on arduino (that was not a choice....)
-- Try to make it universal so new boards/radios/whatever can be plugged in
-- Try to clean up the code and hunt down anything that I've missed <-- YOU ARE HERE NOW
-- Revise everything once again, try to understand more than just a quarter of it
-- Cleanup-debug--port upstream changes-anything that pops in my mind
-- ???
-- Profit
-
-Wio Tracker L1 companion and Ikoka Nano 30dB repeater is working according to my tests, I can't vouch for anything else yet.
-It's compatible with the current bootloaders I use, so I can roll back to arduino version easily and I have DFU.
-Repeater's "touch 1200" and other methods to enter DFU aren't tested yet.
-
-
-
-And now, the sacred AI texts:
-
-
 ## Why Zephyr?
 
 The Arduino version uses a `loop()`. This port replaces that with Zephyr's event-driven primitives (`k_event_wait`, `k_poll`, `k_msgq`), so the CPU sleeps in WFI (Wait For Interrupt) between events.
@@ -40,17 +15,37 @@ Other benefits:
 
 ## Supported Boards
 
+### nRF52840
+
+| Board | Radio | Extras |
+|-------|-------|--------|
+| **Wio Tracker L1** | SX1262 | GPS (L76KB), OLED (SH1106), joystick, buzzer, QSPI flash |
+| **Seeed T1000-E** | LR1110 | GPS (AG3335), LEDs, button |
+| **RAK4631** | SX1262 | GPS (u-blox MAX-7Q), I2C sensors (SHTC3, LPS22HB, BME680) |
+| **RAK WisMesh Tag** | SX1262 | GPS (AT6558R), accelerometer, RGB LEDs, buzzer |
+| **ThinkNode M1** | SX1262 | GPS, e-paper display (SSD1681), QSPI flash, buzzer, RGB LEDs |
+| **Ikoka Nano 30dBm** | SX1262 (E22-900M30S, 30dBm PA) | RGB LEDs |
+
+### ESP32
+
 | Board | MCU | Radio | Extras |
 |-------|-----|-------|--------|
-| **Wio Tracker L1** | nRF52840 | SX1262 | GPS (L76K), OLED display, joystick, buzzer, QSPI flash |
-| **Seeed T1000-E** | nRF52840 | LR1110 | GPS (Mediatek AG3335), LEDs, button |
-| **Ikoka Nano 30dBm** | XIAO nRF52840 | SX1262 (E22-900M30S, 30dBm PA) | RGB LEDs |
+| **XIAO ESP32-C3** | ESP32-C3 | SX1262 | BLE 5.0 |
+| **XIAO ESP32-C6** | ESP32-C6 | SX1262 | BLE 5.0, Wi-Fi 6 |
+| **Station G2** | ESP32-S3 | SX1262 (+PA) | OLED (SH1106), GPS, 16MB flash, 8MB PSRAM |
+| **LilyGo TLoRa C6** | ESP32-C6 | SX1262 | BLE 5.0, Wi-Fi 6 |
+
+### Other
+
+| Board | MCU | Radio | Extras |
+|-------|-----|-------|--------|
+| **XIAO nRF54L15** | nRF54L15 | SX1262 | FLPR multicore, RRAM storage |
+| **XIAO MG24** | EFR32MG24 | SX1262 | BLE (SiLabs blob) |
 
 ## Device Roles
 
-**Companion** (default)
-
-**Repeater**
+- **Companion** (default) -- connects to MeshCore mobile apps via BLE
+- **Repeater** -- forwards packets, configured via USB serial CLI
 
 ## Building
 
@@ -100,12 +95,13 @@ Mobile App  <--BLE (NUS)--> [ Companion ]  <--LoRa-->  Mesh Network
                     LORA_RX   LORA_TX_DONE  BLE_RX
 ```
 
-All code paths are event-driven. No polling loops, no busy waits.
+All code paths are event-driven. The CPU sleeps in WFI between events.
 
-- **LoRa RX**: Zephyr driver callback signals the mesh event loop
-- **LoRa TX**: A dedicated 512-byte thread blocks on `k_poll()`, restarts RX immediately on completion, then notifies the mesh loop
+- **LoRa RX**: Zephyr driver callback enqueues to a ring buffer and signals the mesh event loop
+- **LoRa TX**: A dedicated thread blocks on `k_poll()`, restarts RX on completion, then notifies the mesh loop
 - **BLE**: NUS write handler enqueues to `k_msgq` and signals the mesh loop; TX uses `bt_gatt_notify_cb()` chaining
-- **Main loop**: `k_event_wait()` blocks until work arrives
+- **USB**: CDC-ACM with V3 binary framing protocol, frame timeout recovery
+- **Main loop**: `k_event_wait()` blocks until work arrives; housekeeping runs every 5s
 
 ### Key Differences from Arduino
 
@@ -133,13 +129,16 @@ Key Kconfig options (set in board configs or via `-D` flags):
 |--------|---------|-------------|
 | `CONFIG_ZEPHCORE_ROLE_COMPANION` | y | BLE companion mode |
 | `CONFIG_ZEPHCORE_ROLE_REPEATER` | n | USB CLI repeater mode |
-| `CONFIG_ZEPHCORE_RADIO_NATIVE` | y | SX1261/62/68/(7x?) radio |
-| `CONFIG_ZEPHCORE_RADIO_LR1110` | n | LR1110/LR1120 radio |
-| `CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE` | y | RX power saving |
-| `CONFIG_ZEPHCORE_MAX_CONTACTS` | 350 | Contact storage slots |
-| `CONFIG_ZEPHCORE_MAX_CHANNELS` | 40 | Channel slots |
+| `CONFIG_ZEPHCORE_RADIO_NATIVE` | y | SX126x, SX127x, LLCC68, STM32WL |
+| `CONFIG_ZEPHCORE_RADIO_LR1110` | n | LR1110/LR1120/LR1121 (custom driver) |
+| `CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE` | n | CAD-based RX power saving (enabled on WisMesh Tag, ThinkNode M1) |
+| `CONFIG_ZEPHCORE_MAX_CONTACTS` | 350 | Contact storage slots (companion) |
+| `CONFIG_ZEPHCORE_MAX_CHANNELS` | 40 | Channel slots (companion) |
 | `CONFIG_ZEPHCORE_BLE_PASSKEY` | 123456 | BLE pairing PIN |
-| `CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC` | 300 | GPS fix interval |
+| `CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC` | 300 | GPS fix interval (seconds) |
+| `CONFIG_ZEPHCORE_WIFI_OTA` | n | WiFi AP + HTTP OTA updates (ESP32 repeaters) |
+| `CONFIG_ZEPHCORE_PACKET_LOGGING` | n | Arduino-compatible mesh packet logging |
+| `CONFIG_ZEPHCORE_HOUSEKEEPING_INTERVAL_MS` | 5000 | Periodic maintenance interval |
 
 ## Project Structure
 
@@ -148,15 +147,23 @@ zephcore/
   src/              Main entry points and core mesh protocol
   app/              Companion and repeater role implementations
   adapters/
-    radio/          LoRa radio drivers (SX126x, LR1110)
+    ble/            BLE NUS transport
     board/          GPIO, LED, power management
-    datastore/      LittleFS filesystem wrapper
-    sensors/        I2C sensor auto-detection
     clock/          Millisecond and RTC clocks
+    datastore/      LittleFS filesystem wrapper
+    gps/            GPS/GNSS drivers
+    ota/            WiFi OTA firmware updates
+    radio/          LoRa radio drivers (SX126x, LR1110)
+    rng/            Random number generator
+    sensors/        I2C sensor auto-detection
+    usb/            USB serial transport (CDC-ACM, V3 framing)
   helpers/
     ui/             Display, buzzer, button input
   boards/
-    nrf52840/       Per-board devicetree overlays and configs
+    nrf52840/       nRF52840 board overlays and configs
+    esp32/          ESP32-C3/C6/S3 board overlays and configs
+    nrf54l/         nRF54L15 board overlay and config
+    mg24/           EFR32MG24 board overlay and config
     common/         Shared Kconfig fragments and devicetree includes
   lib/              ED25519 crypto library
   patches/          Auto-applied patches to the Zephyr tree
