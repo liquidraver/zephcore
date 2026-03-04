@@ -24,7 +24,7 @@ LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
 	  _in_recv_mode(false), _tx_active(false),
 	  _last_rssi(0), _last_snr(0),
 	  _rx_head(0), _rx_tail(0),
-	  _noise_floor(DEFAULT_NOISE_FLOOR), _calibration_threshold(0),
+	  _noise_floor(DEFAULT_NOISE_FLOOR), _calibration_threshold(0), _ema_unguarded(0),
 	  _rx_duty_cycle_enabled(IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)),
 	  _rx_boost_enabled(true),
 	  _config_cached(false),
@@ -517,22 +517,42 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 
 	int16_t rssi = hwGetCurrentRSSI();
 
-	/* First sample after reset (DEFAULT_NOISE_FLOOR == 0): seed directly. */
+	/* First sample after reset (DEFAULT_NOISE_FLOOR == 0): seed directly
+	 * and start warmup window where all samples are accepted. */
 	if (_noise_floor == DEFAULT_NOISE_FLOOR) {
 		_noise_floor = rssi;
 		if (_noise_floor < -120) _noise_floor = -120;
 		if (_noise_floor > -50) _noise_floor = -50;
+		_ema_unguarded = (1 << NOISE_FLOOR_EMA_SHIFT);  /* 8 ticks */
 		LOG_DBG("noise_floor_cal: seed=%d", _noise_floor);
 		return;
 	}
 
-	/* Reject samples above floor + threshold (interference / signal). */
-	if (rssi >= _noise_floor + NOISE_FLOOR_SAMPLING_THRESHOLD) {
+	/* Threshold filter with periodic unguarded samples.
+	 * During warmup (after seed/reset), all samples are accepted so the
+	 * EMA converges quickly.  After warmup, every Nth tick (N = EMA window)
+	 * one sample bypasses the filter so the floor can track sustained
+	 * upward shifts (new interference source, antenna change, etc.).
+	 * The EMA's 1/8 weight naturally dampens isolated spikes. */
+	if (_ema_unguarded > 0) {
+		_ema_unguarded--;
+	} else if (rssi >= _noise_floor + NOISE_FLOOR_SAMPLING_THRESHOLD) {
 		return;
 	}
+	/* Reload: next unguarded sample in N ticks. */
+	if (_ema_unguarded == 0) {
+		_ema_unguarded = (1 << NOISE_FLOOR_EMA_SHIFT);  /* 8 */
+	}
 
-	/* EMA: floor += (sample - floor) >> SHIFT.  Integer-only. */
-	_noise_floor += (rssi - _noise_floor) >> NOISE_FLOOR_EMA_SHIFT;
+	/* EMA: floor += round_nearest((sample - floor) / 8).
+	 * Plain >> has downward bias (-1>>3 == -1 but +1>>3 == 0).
+	 * Plain /  has a ±7 dead zone (small drifts ignored).
+	 * Round-to-nearest: add half the divisor before dividing,
+	 * with sign-aware bias so both directions are symmetric. */
+	int diff = rssi - _noise_floor;
+	int half = (1 << NOISE_FLOOR_EMA_SHIFT) / 2;          /* 4 */
+	int step = (diff + (diff > 0 ? half : -half)) / (1 << NOISE_FLOOR_EMA_SHIFT);
+	_noise_floor += step;
 	if (_noise_floor < -120) _noise_floor = -120;
 	if (_noise_floor > -50) _noise_floor = -50;
 
@@ -549,10 +569,11 @@ void LoRaRadioBase::resetAGC()
 
 	hwResetAGC();
 
-	/* Reset noise floor sampling so it reconverges from scratch.
+	/* Reset noise floor so it reconverges from scratch (seed + warmup).
 	 * Without this, a stuck _noise_floor of -120 makes the sampling threshold
 	 * too low to accept normal samples, self-reinforcing the stuck value. */
 	_noise_floor = DEFAULT_NOISE_FLOOR;
+	_ema_unguarded = 0;
 }
 
 bool LoRaRadioBase::isReceiving()

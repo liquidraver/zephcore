@@ -4,12 +4,11 @@
  * Erases all filesystem partitions and reboots into Adafruit UF2 DFU mode
  * for clean firmware installation.
  *
- * nRF52 builds use hardcoded flash addresses (identical across all boards)
- * so a single UF2 works on every board with the same SoftDevice version.
+ * All platforms use DTS FIXED_PARTITION_EXISTS guards — no hardcoded addresses.
+ * nRF52 boards sharing the same SoftDevice version use the same partition dtsi,
+ * so a single UF2 works on every board with that SoftDevice version.
  * QSPI is compile-time conditional — included only when building for a
  * QSPI-capable board target (pin config is board-specific).
- *
- * Non-nRF52 builds use DTS FIXED_PARTITION_EXISTS guards as before.
  *
  * Build:
  *   SD v7:        west build -b t1000_e/nrf52840        zephcore/tools/formatter --pristine
@@ -36,20 +35,6 @@
 /* Adafruit UF2 bootloader magic — enter mass storage DFU mode */
 #define BOOTLOADER_DFU_UF2_MAGIC  0x57
 
-/*
- * nRF52840 Arduino MeshCore partition addresses.
- * These are IDENTICAL across all nRF52 boards (SD v6 and v7):
- *   ExtraFS    @ 0xD4000 (100KB) — contacts, channels, blobs
- *   InternalFS @ 0xED000 (28KB)  — prefs, identity, BLE settings
- *
- * Only the SoftDevice/app boundary differs (v6=0x26000, v7=0x27000),
- * which doesn't affect the formatter since we don't touch app flash.
- */
-#define NRF52_EXTRAFS_OFF       0xD4000
-#define NRF52_EXTRAFS_SIZE      0x19000   /* 100KB */
-#define NRF52_INTERNALFS_OFF    0xED000
-#define NRF52_INTERNALFS_SIZE   0x7000    /* 28KB */
-
 /* ── LED feedback (optional — may not match actual board) ──── */
 
 #if DT_NODE_EXISTS(DT_ALIAS(led0)) && !IS_NRF52
@@ -68,35 +53,8 @@ static void led_on(void)    {}
 static void led_off(void)   {}
 #endif
 
-/* ── Flash erase helpers ───────────────────────────────────── */
+/* ── Flash erase helper ──────────────────────────────────────── */
 
-#if IS_NRF52
-/**
- * Erase a region of internal flash by absolute address.
- * Works on any nRF52840 board regardless of DTS.
- */
-static int erase_region(const struct device *dev, off_t offset, size_t size,
-			const char *name)
-{
-	printk("  %s: erasing 0x%lx - 0x%lx (%u KB)...",
-	       name, (unsigned long)offset,
-	       (unsigned long)(offset + size),
-	       (unsigned)(size / 1024));
-
-	int rc = flash_erase(dev, offset, size);
-	if (rc) {
-		printk(" FAILED (rc %d)\n", rc);
-	} else {
-		printk(" OK\n");
-	}
-	return rc;
-}
-#endif /* IS_NRF52 */
-
-#if !IS_NRF52
-/**
- * Erase a DTS partition by flash_area ID (non-nRF52 boards).
- */
 static int erase_partition(uint8_t id, const char *name)
 {
 	const struct flash_area *fa;
@@ -124,7 +82,6 @@ static int erase_partition(uint8_t id, const char *name)
 	flash_area_close(fa);
 	return rc;
 }
-#endif /* !IS_NRF52 */
 
 /* ── Main ────────────────────────────────────────────────────── */
 
@@ -142,76 +99,28 @@ int main(void)
 	led_init();
 	led_on();
 
-#if IS_NRF52
-	/*
-	 * nRF52 universal path: hardcoded addresses, no DTS dependency.
-	 * This binary works on ANY nRF52840 board with the same SoftDevice
-	 * version (determines UF2 load address, not erase targets).
-	 */
-	const struct device *flash_dev = DEVICE_DT_GET(DT_NODELABEL(flash_controller));
-
-	if (!device_is_ready(flash_dev)) {
-		printk("  ERROR: flash device not ready!\n");
+	/* ── LittleFS partition (all platforms) ── */
+#if FIXED_PARTITION_EXISTS(lfs_partition)
+	if (erase_partition(FIXED_PARTITION_ID(lfs_partition), "LittleFS (/lfs)")) {
 		errors++;
-	} else {
-		if (erase_region(flash_dev, NRF52_EXTRAFS_OFF,
-				 NRF52_EXTRAFS_SIZE, "ExtraFS (contacts/channels)")) {
-			errors++;
-		}
-		if (erase_region(flash_dev, NRF52_INTERNALFS_OFF,
-				 NRF52_INTERNALFS_SIZE, "InternalFS (prefs/identity)")) {
-			errors++;
-		}
 	}
-
-	/* QSPI: try to erase if present via flash_area (compiled in by DTS).
-	 * On boards without QSPI, FIXED_PARTITION_EXISTS is false at compile
-	 * time so this block is excluded — no runtime probe needed. */
-#if FIXED_PARTITION_EXISTS(qspi_storage_partition)
-	{
-		const struct flash_area *fa;
-		int rc = flash_area_open(FIXED_PARTITION_ID(qspi_storage_partition), &fa);
-		if (rc == 0) {
-			printk("  QSPI: erasing 0x%lx (%u KB, may take a while)...",
-			       (unsigned long)fa->fa_off,
-			       (unsigned)(fa->fa_size / 1024));
-			rc = flash_area_erase(fa, 0, fa->fa_size);
-			printk(rc ? " FAILED (rc %d)\n" : " OK\n", rc);
-			if (rc) errors++;
-			flash_area_close(fa);
-		} else {
-			printk("  QSPI: not accessible (rc %d) — skipped\n", rc);
-		}
-	}
-#else
-	printk("  QSPI: not present in build target — skipped\n");
 #endif
 
-#else /* !IS_NRF52 */
-	/*
-	 * Non-nRF52 path: use DTS partitions (board-specific builds).
-	 */
+	/* ── NVS storage partition (ESP32 etc.) ── */
 #if FIXED_PARTITION_EXISTS(storage_partition)
 	if (erase_partition(FIXED_PARTITION_ID(storage_partition), "NVS (storage)")) {
 		errors++;
 	}
 #endif
 
-#if FIXED_PARTITION_EXISTS(lfs_partition)
-	if (erase_partition(FIXED_PARTITION_ID(lfs_partition), "LittleFS (lfs)")) {
-		errors++;
-	}
-#endif
-
+	/* ── QSPI external flash (boards with external QSPI) ── */
 #if FIXED_PARTITION_EXISTS(qspi_storage_partition)
-	if (erase_partition(FIXED_PARTITION_ID(qspi_storage_partition), "QSPI external")) {
+	if (erase_partition(FIXED_PARTITION_ID(qspi_storage_partition), "QSPI external (/ext)")) {
 		errors++;
 	}
 #else
-	printk("  QSPI: not present on this board — skipped\n");
+	printk("  QSPI: not present in build target — skipped\n");
 #endif
-
-#endif /* IS_NRF52 */
 
 	led_off();
 

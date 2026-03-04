@@ -140,6 +140,7 @@ protected:
 	/* Noise floor calibration state */
 	int _noise_floor;
 	int _calibration_threshold;
+	uint8_t _ema_unguarded;         /* ticks until next unfiltered sample */
 
 	/* Power saving */
 	bool _rx_duty_cycle_enabled;
