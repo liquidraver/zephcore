@@ -1856,7 +1856,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			#endif
 			static const uint8_t fw_build[12] = FIRMWARE_BUILD_DATE;
 			static const uint8_t model[40] = CONFIG_ZEPHCORE_BOARD_NAME;
-			static const uint8_t version[20] = "v1.13.0-zephyr";
+			static const uint8_t version[20] = "v1.14.0-zephyr";
 			uint8_t rsp[82];
 			rsp[0] = PACKET_DEVICE_INFO;
 			rsp[1] = 10;  // FIRMWARE_VER_CODE - v10 = path_hash_mode support

@@ -25,7 +25,7 @@
 #include "RepeaterDataStore.h"
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.13.0-zephyr"
+  #define FIRMWARE_VERSION   "v1.14.0-zephyr"
 #endif
 
 #ifndef FIRMWARE_BUILD_DATE
@@ -121,6 +121,7 @@ protected:
     }
 
     bool allowPacketForward(const mesh::Packet* packet) override;
+    bool isLooped(const mesh::Packet* packet, const uint8_t max_counters[]);
     const char* getLogDateTime() override;
 
     void logRxRaw(float snr, float rssi, const uint8_t raw[], int len) override;

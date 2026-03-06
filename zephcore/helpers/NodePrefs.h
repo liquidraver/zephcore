@@ -23,6 +23,11 @@
 #define ADVERT_LOC_SHARE      1
 #define ADVERT_LOC_PREFS      2
 
+#define LOOP_DETECT_OFF       0
+#define LOOP_DETECT_MINIMAL   1
+#define LOOP_DETECT_MODERATE  2
+#define LOOP_DETECT_STRICT    3
+
 struct NodePrefs {
 	/* ---- Common fields (both roles) ---- */
 	float airtime_factor;
@@ -70,6 +75,7 @@ struct NodePrefs {
 	uint8_t client_repeat;          // 1 = offgrid mode (forward packets), 0 = companion only
 	uint8_t path_hash_mode;         // which path mode to use when sending (0-2)
 	uint8_t autoadd_max_hops;       // 0 = no limit, 1 = direct (0 hops), N = up to N-1 hops (max 64)
+	uint8_t loop_detect;            // LOOP_DETECT_OFF/MINIMAL/MODERATE/STRICT
 };
 
 /* Default prefs — MUST match LoRaConfig.h defaults for radio interop.
