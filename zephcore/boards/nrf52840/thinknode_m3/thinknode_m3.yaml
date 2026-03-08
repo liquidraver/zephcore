@@ -1,0 +1,20 @@
+identifier: thinknode_m3
+name: Elecrow ThinkNode M3 (nRF52840 + LR1110)
+type: mcu
+arch: arm
+ram: 256
+flash: 1024
+toolchain:
+  - zephyr
+  - gnuarmemb
+  - xtools
+supported:
+  - adc
+  - ble
+  - gpio
+  - i2c
+  - nvs
+  - spi
+  - usb_device
+  - watchdog
+vendor: elecrow

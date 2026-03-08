@@ -132,10 +132,12 @@
 	};
 
 	/* ---- Battery ADC ---- */
-	/* P0.05 (AIN3), same divider circuit as RAK4631 */
+	/* P0.05 (AIN3), same divider circuit as RAK4631
+	 * Arduino ADC_MULTIPLIER = (3 * 1.73 * 1.187 * 1000) ≈ 6161,
+	 * applied to 12-bit average with default ref (GAIN_1_6 + 0.6V internal = 3.6V FS). */
 	zephyr,user {
 		io-channels = <&adc 3>;
-		vbat-mv-multiplier = <4216>;
+		vbat-mv-multiplier = <6161>;
 	};
 
 	/* ---- Buzzer on PWM0 ---- */

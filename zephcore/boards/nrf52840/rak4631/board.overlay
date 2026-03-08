@@ -38,7 +38,7 @@
 / {
 	zephyr,user {
 		io-channels = <&adc 3>;
-		vbat-mv-multiplier = <4216>;  /* RAK4631 voltage divider */
+		vbat-mv-multiplier = <6161>;  /* Arduino: (3 * 1.73 * 1.187 * 1000) ≈ 6161, GAIN_1_6 + 0.6V ref */
 	};
 };
 

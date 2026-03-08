@@ -1,0 +1,72 @@
+/*
+ * ThinkNode M3 board overlay - additional ZephCore-specific configuration
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * GPS control pins for the GPS module (chip TBD, generic NMEA at 9600 baud):
+ * - GPS_POWER (P0.14) - Main power enable (always HIGH, gpio-hog)
+ * - GPS_EN    (P0.21) - Standby control (HIGH = awake, LOW = standby)
+ * - GPS_RESET (P0.25) - Reset (GPS_RESET_ACTIVE = LOW, REINIT pin)
+ *
+ * Power enable pins (always HIGH):
+ * - PIN_PWR_EN   (P0.16) - Main power domain
+ * - BAT_POWER    (P0.17) - Battery power rail
+ * - EEPROM_POWER (P0.07) - EEPROM power
+ * - LED_POWER    (P0.29) - Power LED (always on)
+ */
+
+/ {
+	/* GPS standby control - P0.21 (GPS_EN, HIGH = active/awake) */
+	gps_en: gps-enable {
+		compatible = "gpio-leds";
+		gps_enable_pin: gps_enable {
+			gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;
+			label = "GPS Enable";
+		};
+	};
+
+	aliases {
+		gps-enable = &gps_enable_pin;
+	};
+};
+
+&gpio0 {
+	/* GPS_POWER (P0.14) - always HIGH, main GPS power supply */
+	gps-power-hog {
+		gpio-hog;
+		gpios = <14 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "GPS Power";
+	};
+
+	/* PIN_PWR_EN (P0.16) - main power domain enable */
+	pwr-en-hog {
+		gpio-hog;
+		gpios = <16 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "PWR Enable";
+	};
+
+	/* BAT_POWER (P0.17) - battery power rail enable */
+	bat-power-hog {
+		gpio-hog;
+		gpios = <17 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "BAT Power";
+	};
+
+	/* EEPROM_POWER (P0.07) - EEPROM/sensor power */
+	eeprom-power-hog {
+		gpio-hog;
+		gpios = <7 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "EEPROM Power";
+	};
+
+	/* LED_POWER (P0.29) - power indicator LED, always on */
+	led-power-hog {
+		gpio-hog;
+		gpios = <29 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "LED Power";
+	};
+};

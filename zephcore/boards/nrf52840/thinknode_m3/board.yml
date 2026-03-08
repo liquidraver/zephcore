@@ -1,0 +1,10 @@
+# Copyright (c) 2025 ZephCore
+#
+# SPDX-License-Identifier: Apache-2.0
+
+board:
+  name: thinknode_m3
+  full_name: Elecrow ThinkNode M3 (nRF52840 + LR1110)
+  vendor: elecrow
+  socs:
+  - name: nrf52840
