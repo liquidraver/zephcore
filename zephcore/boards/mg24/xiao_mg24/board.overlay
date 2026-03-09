@@ -24,6 +24,9 @@
 	chosen {
 		zephyr,settings-partition = &storage_partition;
 	};
+
+	/* No battery voltage divider on this board — disable ADC battery reading */
+	/delete-node/ zephyr,user;
 };
 
 /* Disable I2C0 — default pins PC4(SCL)/PC5(SDA) conflict with NSS/RXEN */
