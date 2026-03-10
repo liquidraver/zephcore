@@ -234,6 +234,7 @@ config ZEPHCORE_RADIO_NATIVE
 config ZEPHCORE_RADIO_LR1110
 	bool "LR1110/LR1120/LR1121 (custom driver)"
 	select LORA
+	select SPI
 	help
 	  Semtech LR11xx via custom ZephCore driver (not upstream Zephyr).
 	  Uses SPI mutex for thread safety + BUSY stuck recovery.
@@ -329,10 +330,15 @@ menu "LoRa Power Saving"
 
 config ZEPHCORE_LORA_RX_DUTY_CYCLE
 	bool "Enable LoRa RX duty cycle power saving"
+	default y if ZEPHCORE_ROLE_COMPANION && !ZEPHCORE_RADIO_LR1110
 	default n
 	help
 	  Enable RX duty cycling for power saving on battery-powered devices.
 	  Uses RadioLib's algorithm to calculate optimal timing based on SF/BW.
+
+	  Auto-enabled for companion devices with SX1262/LLCC68 radios.
+	  Disabled for repeaters (latency matters more than battery life)
+	  and LR1110 (cannot lock on mid-preamble, causes packet loss).
 
 	  The key insight is that LoRa preamble symbols are all identical,
 	  so CAD/RX can detect preamble even if we wake mid-stream. The
@@ -341,7 +347,7 @@ config ZEPHCORE_LORA_RX_DUTY_CYCLE
 
 	  Power savings: ~60-70% reduction in RX current (10-15mA to 3-5mA).
 
-	  Note: Still experimental. Disable if packets are being missed.
+	  Can be toggled at runtime via CLI "set rxduty on/off".
 
 endmenu
 
@@ -420,11 +426,12 @@ config ZEPHCORE_UI_MULTI_TAP
 
 config ZEPHCORE_UI_BUZZER
 	bool "Enable buzzer"
-	default y
-	depends on PWM
+	default y if $(dt_nodelabel_enabled,buzzer)
+	select PWM
 	help
 	  Enable PWM buzzer with RTTTL melody support.
-	  Requires a PWM-capable pin connected to a buzzer.
+	  Auto-enabled when a "buzzer" nodelabel exists in devicetree.
+	  Pulls in CONFIG_PWM automatically.
 
 DT_CHOSEN_ZEPHCORE_DISPLAY := zephyr,display
 

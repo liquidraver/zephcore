@@ -514,23 +514,25 @@
  * flash chip responds (k_sem_take K_FOREVER in nrf_qspi_nor.c).
  * This bricks the device — no USB, no BLE, no logs.
  *
- * ONLY enable QSPI if your base board physically has a QSPI flash chip.
- * If unsure, leave QSPI disabled. The DataStore falls back to internal
+ * ONLY add a QSPI node if your board physically has a QSPI flash chip.
+ * If unsure, leave QSPI out. The DataStore falls back to internal
  * flash gracefully (20 blob slots instead of 100).
  *
+ * The QSPI driver and page size are auto-configured:
+ *   - CONFIG_NORDIC_QSPI_NOR auto-enables from DT (Zephyr default)
+ *   - CONFIG_NORDIC_QSPI_NOR_FLASH_LAYOUT_PAGE_SIZE=4096 in nrf52_common.conf
+ *   - No board.conf changes needed — just add the DT nodes below
+ *
  * To enable QSPI:
- *   1. Set CONFIG_NORDIC_QSPI_NOR=y in board.conf
- *   2. Add the qspi_flash node below (uncommented)
- *   3. Add #include "../../common/qspi-ext.dtsi" for /ext mount
+ *   1. Add the qspi_flash node below (uncommented)
+ *   2. Add #include "../../common/qspi-ext.dtsi" for /ext mount
  *
- * To disable QSPI (default, SAFE):
- *   1. Set CONFIG_NORDIC_QSPI_NOR=n in board.conf
- *   2. Add &qspi { status = "disabled"; }; to override upstream DTS
- *      (some boards like RAK4631 have &qspi enabled in upstream DTS)
- *   3. Do NOT include qspi-ext.dtsi
+ * To disable QSPI on a board whose upstream DTS has &qspi enabled:
+ *   Add &qspi { status = "disabled"; }; to override upstream DTS
+ *   (e.g., RAK4631 has &qspi enabled in upstream but no chip on mini base)
  *
- * Boards WITH QSPI: RAK19007 base, RAK5005-O base
- * Boards WITHOUT:   RAK19003 mini base, most XIAO boards
+ * Boards WITH QSPI: Wio Tracker L1, ThinkNode M1
+ * Boards WITHOUT:   RAK4631 (mini base), most XIAO boards
  * ================================================================== */
 
 /* --- QSPI disabled (safe default) ---
