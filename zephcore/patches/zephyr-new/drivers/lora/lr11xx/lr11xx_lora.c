@@ -83,6 +83,13 @@ struct lr11xx_data {
 	bool rx_boost_enabled;
 	bool rx_boost_applied;  /* RX boost register written to hardware */
 
+	/* CAD state */
+	lora_cad_cb cad_cb;
+	void *cad_user_data;
+	struct k_sem cad_sem;
+	int cad_result;
+	bool cad_active;
+
 	/* Deferred hardware init — heavy SPI/radio work runs on first config() */
 	bool hw_initialized;
 
@@ -439,6 +446,29 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 		rx_restarted = true;
 	}
 
+	/* ── CAD done ── */
+	if (irq & LR11XX_SYSTEM_IRQ_CAD_DONE) {
+		bool detected = (irq & LR11XX_SYSTEM_IRQ_CAD_DETECTED) != 0;
+
+		LOG_DBG("CAD done: %s", detected ? "activity" : "free");
+		data->cad_active = false;
+
+		if (data->cad_cb) {
+			lora_cad_cb cb = data->cad_cb;
+			void *ud = data->cad_user_data;
+
+			data->cad_cb = NULL;
+			data->cad_user_data = NULL;
+			k_mutex_unlock(&data->spi_mutex);
+			cb(data->dev, detected, ud);
+			return;
+		}
+
+		/* Blocking CAD: signal the semaphore */
+		data->cad_result = detected ? 1 : 0;
+		k_sem_give(&data->cad_sem);
+	}
+
 	/* ── TX done ── */
 	if (irq & LR11XX_SYSTEM_IRQ_TX_DONE) {
 		LOG_DBG("TX done");
@@ -602,6 +632,9 @@ static uint32_t lr11xx_lora_airtime(const struct device *dev,
 	return (uint32_t)((t_preamble + t_payload) * 1000.0f);
 }
 
+/* Forward declaration — needed by LBT in send_async */
+static int lr11xx_lora_cad(const struct device *dev, k_timeout_t timeout);
+
 /* ── Driver API: send_async ─────────────────────────────────────────── */
 
 static int lr11xx_lora_send_async(const struct device *dev,
@@ -615,6 +648,19 @@ static int lr11xx_lora_send_async(const struct device *dev,
 	if (!data->configured) return -EINVAL;
 	if (data->tx_active) return -EBUSY;
 	if (data_len > 255 || data_len == 0) return -EINVAL;
+
+	/* LBT: perform blocking CAD before transmitting */
+	if (data->modem_cfg.cad.mode == LORA_CAD_MODE_LBT) {
+		int cad_ret = lr11xx_lora_cad(dev, K_MSEC(200));
+		if (cad_ret > 0) {
+			LOG_DBG("LBT: channel busy");
+			return -EBUSY;
+		}
+		if (cad_ret < 0 && cad_ret != -ENOSYS) {
+			LOG_WRN("LBT: CAD failed (%d), proceeding with TX",
+				cad_ret);
+		}
+	}
 
 	k_mutex_lock(&data->spi_mutex, K_FOREVER);
 
@@ -771,13 +817,6 @@ bool lr11xx_is_receiving(const struct device *dev)
 		       LR11XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID)) != 0;
 }
 
-void lr11xx_set_rx_duty_cycle(const struct device *dev, bool enable)
-{
-	/* LR1110 duty cycle is broken — always continuous RX. Ignore. */
-	(void)dev;
-	(void)enable;
-}
-
 void lr11xx_set_rx_boost(const struct device *dev, bool enable)
 {
 	struct lr11xx_data *data = dev->data;
@@ -857,6 +896,131 @@ void lr11xx_reset_agc(const struct device *dev)
 }
 
 /* ── Deferred hardware init (runs on first lora_config call) ────────── */
+
+/* ── Driver API: CAD ────────────────────────────────────────────────── */
+
+/* Recommended cad_detect_peak values per SF for 2-symbol CAD.
+ * From Semtech SX1261/62/68 / LR1110 reference (same silicon IP). */
+static uint8_t lr11xx_cad_detect_peak(uint8_t sf)
+{
+	switch (sf) {
+	case 5:  case 6:  return 56;
+	case 7:           return 56;
+	case 8:           return 58;
+	case 9:           return 58;
+	case 10:          return 60;
+	case 11:          return 64;
+	case 12:          return 68;
+	default:          return 60;
+	}
+}
+
+static int lr11xx_do_cad(struct lr11xx_data *data)
+{
+	void *ctx = &data->hal_ctx;
+	struct lora_modem_config *mc = &data->modem_cfg;
+
+	uint8_t sf = (uint8_t)mc->datarate;
+	uint8_t symb_nb = 2;
+	uint8_t detect_peak = lr11xx_cad_detect_peak(sf);
+
+	if (mc->cad.symbol_num != 0) {
+		symb_nb = (uint8_t)mc->cad.symbol_num;
+	}
+	if (mc->cad.detection_peak != 0) {
+		detect_peak = mc->cad.detection_peak;
+	}
+
+	lr11xx_radio_cad_params_t cad = {
+		.cad_symb_nb = symb_nb,
+		.cad_detect_peak = detect_peak,
+		.cad_detect_min = mc->cad.detection_minimum ? mc->cad.detection_minimum : 10,
+		.cad_exit_mode = LR11XX_RADIO_CAD_EXIT_MODE_STANDBYRC,
+		.cad_timeout = 0,
+	};
+
+	lr11xx_radio_set_cad_params(ctx, &cad);
+
+	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
+	data->cad_active = true;
+	lr11xx_radio_set_cad(ctx);
+
+	return 0;
+}
+
+static int lr11xx_lora_cad(const struct device *dev, k_timeout_t timeout)
+{
+	struct lr11xx_data *data = dev->data;
+	int ret;
+
+	if (!data->configured) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->spi_mutex, K_FOREVER);
+
+	bool was_in_rx = data->in_rx_mode;
+
+	if (was_in_rx) {
+		data->in_rx_mode = false;
+		lr11xx_system_set_standby(&data->hal_ctx,
+					  LR11XX_SYSTEM_STANDBY_CFG_RC);
+	}
+
+	k_sem_reset(&data->cad_sem);
+	data->cad_result = -ETIMEDOUT;
+	data->cad_cb = NULL;
+
+	ret = lr11xx_do_cad(data);
+	k_mutex_unlock(&data->spi_mutex);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = k_sem_take(&data->cad_sem, timeout);
+	if (ret == -EAGAIN) {
+		data->cad_active = false;
+		return -ETIMEDOUT;
+	}
+
+	return data->cad_result;
+}
+
+static int lr11xx_lora_cad_async(const struct device *dev,
+				  lora_cad_cb cb, void *user_data)
+{
+	struct lr11xx_data *data = dev->data;
+
+	if (cb == NULL) {
+		data->cad_cb = NULL;
+		data->cad_user_data = NULL;
+		data->cad_active = false;
+		return 0;
+	}
+
+	if (!data->configured) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->spi_mutex, K_FOREVER);
+
+	if (data->in_rx_mode) {
+		data->in_rx_mode = false;
+		lr11xx_system_set_standby(&data->hal_ctx,
+					  LR11XX_SYSTEM_STANDBY_CFG_RC);
+	}
+
+	data->cad_cb = cb;
+	data->cad_user_data = user_data;
+
+	int ret = lr11xx_do_cad(data);
+	k_mutex_unlock(&data->spi_mutex);
+
+	return ret;
+}
+
+/* ── Deferred hardware init ─────────────────────────────────────────── */
 
 static int lr11xx_hw_init(struct lr11xx_data *data,
 			  const struct lr11xx_config *cfg)
@@ -975,6 +1139,7 @@ static int lr11xx_lora_init(const struct device *dev)
 	data->hw_initialized = false;
 
 	k_mutex_init(&data->spi_mutex);
+	k_sem_init(&data->cad_sem, 0, 1);
 	k_work_init(&data->dio1_work, lr11xx_dio1_work_handler);
 
 	/* Start dedicated DIO1 work queue at high priority */
@@ -1035,6 +1200,9 @@ static DEVICE_API(lora, lr11xx_lora_api) = {
 	.send_async = lr11xx_lora_send_async,
 	.recv       = lr11xx_lora_recv,
 	.recv_async = lr11xx_lora_recv_async,
+	.cad        = lr11xx_lora_cad,
+	.cad_async  = lr11xx_lora_cad_async,
+	/* .recv_duty_cycle = NULL — LR1110 duty cycle broken */
 };
 
 #define LR11XX_INIT(n)                                                     \

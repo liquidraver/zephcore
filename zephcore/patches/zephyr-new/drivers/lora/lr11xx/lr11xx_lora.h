@@ -41,19 +41,6 @@ int16_t lr11xx_get_rssi_inst(const struct device *dev);
 bool lr11xx_is_receiving(const struct device *dev);
 
 /**
- * @brief Enable/disable RX duty cycle mode
- *
- * When enabled, the radio alternates between RX and sleep using the
- * RadioLib preamble detection algorithm. Saves ~60-70% RX current.
- *
- * Takes effect on the next RX start (recv_async or after TX).
- *
- * @param dev LoRa device
- * @param enable true to enable, false for continuous RX
- */
-void lr11xx_set_rx_duty_cycle(const struct device *dev, bool enable);
-
-/**
  * @brief Enable/disable RX boosted mode
  *
  * Boosted mode increases LNA gain for +3dB sensitivity at +2mA cost.

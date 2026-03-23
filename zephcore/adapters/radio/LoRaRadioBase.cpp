@@ -210,6 +210,11 @@ void LoRaRadioBase::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 	cfg.iq_inverted = false;
 	cfg.public_network = false;
 	cfg.packet_crc_disable = false;
+
+	/* LBT: driver performs hardware CAD before TX, returns -EBUSY if busy */
+	if (tx) {
+		cfg.cad.mode = LORA_CAD_MODE_LBT;
+	}
 }
 
 /**
@@ -374,7 +379,63 @@ void LoRaRadioBase::reconfigureWithParams(float freq, float bw, uint8_t sf, uint
 void LoRaRadioBase::startReceive()
 {
 	configureRx();
-	hwStartReceive();
+
+	int ret;
+
+	if (_rx_duty_cycle_enabled) {
+		/* Compute duty cycle timing from modem config (RadioLib algorithm).
+		 * The driver converts these to hardware-specific units. */
+		struct lora_modem_config cfg;
+		buildModemConfig(cfg, false);
+
+		uint8_t sf = (uint8_t)cfg.datarate;
+		uint32_t bw_hz = bandwidth_to_hz(cfg.bandwidth);
+		float bw_khz = (float)bw_hz / 1000.0f;
+		uint16_t preamble_len = cfg.preamble_len;
+		uint16_t min_symbols = (sf >= 7) ? 8 : 12;
+		int16_t sleep_symbols = (int16_t)preamble_len -
+					(int16_t)min_symbols;
+
+		if (sleep_symbols > 0) {
+			uint32_t symbol_us = (uint32_t)((float)(1 << sf) *
+							 1000.0f / bw_khz);
+			int16_t safe = sleep_symbols - 2;
+			if (safe < 1) safe = 1;
+			uint32_t sleep_us = (uint16_t)safe * symbol_us;
+
+			uint32_t preamble_us = (preamble_len + 1) * symbol_us;
+			int32_t w1 = ((int32_t)preamble_us -
+				      ((int32_t)sleep_us - 1000)) / 2;
+			uint32_t w2 = (min_symbols + 1) * symbol_us;
+			uint32_t rx_us = (w1 > 0 && (uint32_t)w1 > w2)
+					  ? (uint32_t)w1 : w2;
+
+			ret = lora_recv_duty_cycle(_dev,
+						   K_USEC(rx_us),
+						   K_USEC(sleep_us),
+						   rxCallbackStatic, this);
+			if (ret == 0) {
+				atomic_set(&_in_recv_mode, 1);
+				return;
+			}
+			if (ret != -ENOSYS) {
+				LOG_ERR("lora_recv_duty_cycle failed: %d", ret);
+			}
+		} else {
+			LOG_WRN("Preamble too short for duty cycle "
+				"(need >%d, have %d)",
+				min_symbols, preamble_len);
+		}
+		/* Fall through to normal recv_async */
+	}
+
+	ret = lora_recv_async(_dev, rxCallbackStatic, this);
+	if (ret < 0) {
+		LOG_ERR("lora_recv_async failed: %d", ret);
+		atomic_set(&_in_recv_mode, 0);
+		return;
+	}
+	atomic_set(&_in_recv_mode, 1);
 }
 
 /* ── RX/TX ────────────────────────────────────────────────────────────── */
@@ -524,18 +585,6 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 		return;
 	}
 
-	/* Random delay 0-500 ms before sampling.  Breaks phase-lock with
-	 * periodic interference that might be synchronized with our fixed
-	 * 5-second housekeeping cadence. */
-	uint32_t jitter;
-	sys_rand_get(&jitter, sizeof(jitter));
-	k_sleep(K_MSEC(jitter % 500));
-
-	/* Re-check after the delay — a packet may have arrived. */
-	if (isReceiving()) {
-		return;
-	}
-
 	/* Median of multiple RSSI reads (~200 us).  Rejects up to N/2-1
 	 * outliers in either direction without the downward bias of min
 	 * or the spike sensitivity of average.  Insertion sort is fine
@@ -663,7 +712,10 @@ void LoRaRadioBase::enableRxDutyCycle(bool enable)
 	_rx_duty_cycle_enabled = enable;
 	LOG_INF("RX duty cycle %s", enable ? "enabled" : "disabled");
 	if (atomic_get(&_in_recv_mode)) {
-		hwSetRxDutyCycle(enable);
+		/* Restart receive to apply new duty cycle state */
+		hwCancelReceive();
+		atomic_set(&_in_recv_mode, 0);
+		startReceive();
 	}
 }
 

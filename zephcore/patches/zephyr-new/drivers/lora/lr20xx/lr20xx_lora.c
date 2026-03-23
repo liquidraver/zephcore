@@ -86,6 +86,13 @@ struct lr20xx_data {
 	bool rx_boost_enabled;
 	bool rx_boost_applied;
 
+	/* CAD state */
+	lora_cad_cb cad_cb;
+	void *cad_user_data;
+	struct k_sem cad_sem;
+	int cad_result;	/* 0=free, 1=busy, <0=error */
+	bool cad_active;
+
 	/* Deferred hardware init */
 	bool hw_initialized;
 
@@ -675,6 +682,29 @@ static void lr20xx_dio1_work_handler(struct k_work *work)
 		rx_restarted = true;
 	}
 
+	/* ── CAD done ── */
+	if (irq & LR20XX_SYSTEM_IRQ_CAD_DONE) {
+		bool detected = (irq & LR20XX_SYSTEM_IRQ_CAD_DETECTED) != 0;
+
+		LOG_DBG("CAD done: %s", detected ? "activity" : "free");
+		data->cad_active = false;
+
+		if (data->cad_cb) {
+			lora_cad_cb cb = data->cad_cb;
+			void *ud = data->cad_user_data;
+
+			data->cad_cb = NULL;
+			data->cad_user_data = NULL;
+			k_mutex_unlock(&data->spi_mutex);
+			cb(data->dev, detected, ud);
+			return;
+		}
+
+		/* Blocking CAD: signal the semaphore */
+		data->cad_result = detected ? 1 : 0;
+		k_sem_give(&data->cad_sem);
+	}
+
 	/* ── TX done ── */
 	if (irq & LR20XX_SYSTEM_IRQ_TX_DONE) {
 		LOG_DBG("TX done");
@@ -826,6 +856,8 @@ static uint32_t lr20xx_lora_airtime(const struct device *dev,
 
 /* ── Driver API: send_async ─────────────────────────────────────────── */
 
+static int lr20xx_lora_cad(const struct device *dev, k_timeout_t timeout);
+
 static int lr20xx_lora_send_async(const struct device *dev,
 				  uint8_t *buf, uint32_t data_len,
 				  struct k_poll_signal *async)
@@ -837,6 +869,19 @@ static int lr20xx_lora_send_async(const struct device *dev,
 	if (!data->configured) return -EINVAL;
 	if (data->tx_active) return -EBUSY;
 	if (data_len > 255 || data_len == 0) return -EINVAL;
+
+	/* LBT: perform blocking CAD before transmitting */
+	if (data->modem_cfg.cad.mode == LORA_CAD_MODE_LBT) {
+		int cad_ret = lr20xx_lora_cad(dev, K_MSEC(200));
+		if (cad_ret > 0) {
+			LOG_DBG("LBT: channel busy");
+			return -EBUSY;
+		}
+		if (cad_ret < 0 && cad_ret != -ENOSYS) {
+			LOG_WRN("LBT: CAD failed (%d), proceeding with TX",
+				cad_ret);
+		}
+	}
 
 	k_mutex_lock(&data->spi_mutex, K_FOREVER);
 
@@ -956,15 +1001,13 @@ static int lr20xx_lora_recv_async(const struct device *dev,
 
 	data->async_rx_cb = cb;
 	data->async_rx_user_data = user_data;
+	data->rx_duty_cycle_enabled = false;
 
 	lr20xx_start_rx(data, cfg);
 
 	k_mutex_unlock(&data->spi_mutex);
 
-	LOG_INF("recv_async: %s%s",
-		data->rx_duty_cycle_enabled
-			? "RX duty cycle"
-			: "continuous RX",
+	LOG_INF("recv_async: continuous RX%s",
 		data->rx_boost_enabled ? ", boosted" : "");
 
 	return 0;
@@ -1020,19 +1063,6 @@ bool lr20xx_is_receiving(const struct device *dev)
 
 	return (irq & (LR20XX_SYSTEM_IRQ_PREAMBLE_DETECTED |
 		       LR20XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID)) != 0;
-}
-
-void lr20xx_set_rx_duty_cycle(const struct device *dev, bool enable)
-{
-	struct lr20xx_data *data = dev->data;
-
-	if (data->rx_duty_cycle_enabled == enable) {
-		return;
-	}
-
-	data->rx_duty_cycle_enabled = enable;
-	LOG_INF("RX duty cycle %s (takes effect on next RX start)",
-		enable ? "enabled" : "disabled");
 }
 
 void lr20xx_set_rx_boost(const struct device *dev, bool enable)
@@ -1111,6 +1141,188 @@ void lr20xx_reset_agc(const struct device *dev)
 	}
 
 	k_mutex_unlock(&data->spi_mutex);
+}
+
+/* ── Driver API: CAD ────────────────────────────────────────────────── */
+
+/* Recommended cad_detect_peak values per SF for 2-symbol CAD.
+ * From Semtech LR20xx datasheet table.  Using 2 symbols as a
+ * good balance between speed (~2 symbol durations) and reliability. */
+static uint8_t lr20xx_cad_detect_peak(uint8_t sf)
+{
+	switch (sf) {
+	case 5:  case 6:  return 56;
+	case 7:           return 56;
+	case 8:           return 58;
+	case 9:           return 58;
+	case 10:          return 60;
+	case 11:          return 64;
+	case 12:          return 68;
+	default:          return 60;
+	}
+}
+
+static int lr20xx_do_cad(struct lr20xx_data *data)
+{
+	void *ctx = &data->hal_ctx;
+	struct lora_modem_config *mc = &data->modem_cfg;
+
+	uint8_t sf = (uint8_t)mc->datarate;
+	lr20xx_radio_lora_cad_params_t cad = {
+		.cad_symb_nb = 2,
+		.pnr_delta = 0,	/* exact symbol count, no best-effort */
+		.cad_exit_mode = LR20XX_RADIO_LORA_CAD_EXIT_MODE_STANDBYRC,
+		.cad_timeout_in_pll_step = 0,
+		.cad_detect_peak = lr20xx_cad_detect_peak(sf),
+	};
+
+	/* Override from modem config if caller set non-zero values */
+	if (mc->cad.symbol_num != 0) {
+		cad.cad_symb_nb = (uint8_t)mc->cad.symbol_num;
+	}
+	if (mc->cad.detection_peak != 0) {
+		cad.cad_detect_peak = mc->cad.detection_peak;
+	}
+
+	lr20xx_radio_lora_configure_cad_params(ctx, &cad);
+
+	/* Clear any pending IRQ flags, then start CAD */
+	lr20xx_system_clear_irq_status(ctx, LR20XX_SYSTEM_IRQ_ALL_MASK);
+	data->cad_active = true;
+	lr20xx_radio_lora_set_cad(ctx);
+
+	return 0;
+}
+
+static int lr20xx_lora_cad(const struct device *dev, k_timeout_t timeout)
+{
+	struct lr20xx_data *data = dev->data;
+	int ret;
+
+	if (!data->configured) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->spi_mutex, K_FOREVER);
+
+	/* Stop async RX if active — CAD needs the radio */
+	bool was_in_rx = data->in_rx_mode;
+
+	if (was_in_rx) {
+		data->in_rx_mode = false;
+		lr20xx_system_set_standby_mode(&data->hal_ctx,
+					       LR20XX_SYSTEM_STANDBY_MODE_RC);
+	}
+
+	k_sem_reset(&data->cad_sem);
+	data->cad_result = -ETIMEDOUT;
+	data->cad_cb = NULL;
+
+	ret = lr20xx_do_cad(data);
+	k_mutex_unlock(&data->spi_mutex);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	/* Wait for DIO1 handler to signal CAD_DONE */
+	ret = k_sem_take(&data->cad_sem, timeout);
+	if (ret == -EAGAIN) {
+		data->cad_active = false;
+		return -ETIMEDOUT;
+	}
+
+	return data->cad_result;
+}
+
+static int lr20xx_lora_cad_async(const struct device *dev,
+				  lora_cad_cb cb, void *user_data)
+{
+	struct lr20xx_data *data = dev->data;
+
+	if (cb == NULL) {
+		/* Cancel pending CAD */
+		data->cad_cb = NULL;
+		data->cad_user_data = NULL;
+		data->cad_active = false;
+		return 0;
+	}
+
+	if (!data->configured) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->spi_mutex, K_FOREVER);
+
+	bool was_in_rx = data->in_rx_mode;
+
+	if (was_in_rx) {
+		data->in_rx_mode = false;
+		lr20xx_system_set_standby_mode(&data->hal_ctx,
+					       LR20XX_SYSTEM_STANDBY_MODE_RC);
+	}
+
+	data->cad_cb = cb;
+	data->cad_user_data = user_data;
+
+	int ret = lr20xx_do_cad(data);
+	k_mutex_unlock(&data->spi_mutex);
+
+	return ret;
+}
+
+/* ── Driver API: recv_duty_cycle ────────────────────────────────────── */
+
+static int lr20xx_lora_recv_duty_cycle(const struct device *dev,
+				       k_timeout_t rx_period,
+				       k_timeout_t sleep_period,
+				       lora_recv_cb cb, void *user_data)
+{
+	struct lr20xx_data *data = dev->data;
+	const struct lr20xx_config *cfg = dev->config;
+
+	if (cb == NULL) {
+		/* Cancel — same as recv_async(NULL) */
+		k_mutex_lock(&data->spi_mutex, K_FOREVER);
+		data->async_rx_cb = NULL;
+		data->async_rx_user_data = NULL;
+		data->in_rx_mode = false;
+		k_mutex_unlock(&data->spi_mutex);
+		return 0;
+	}
+
+	if (!data->configured) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->spi_mutex, K_FOREVER);
+
+	data->async_rx_cb = cb;
+	data->async_rx_user_data = user_data;
+
+	void *ctx = &data->hal_ctx;
+
+	lr20xx_system_set_standby_mode(ctx, LR20XX_SYSTEM_STANDBY_MODE_RC);
+	lr20xx_system_clear_irq_status(ctx, LR20XX_SYSTEM_IRQ_ALL_MASK);
+	lr20xx_radio_fifo_clear_rx(ctx);
+	lr20xx_apply_modem_config(data, cfg, false);
+
+	uint32_t rx_ms = k_ticks_to_ms_ceil32(rx_period.ticks);
+	uint32_t slp_ms = k_ticks_to_ms_ceil32(sleep_period.ticks);
+	if (rx_ms < 1) rx_ms = 1;
+	if (slp_ms < 1) slp_ms = 1;
+
+	data->rx_duty_cycle_enabled = true;
+	lr20xx_radio_common_set_rx_duty_cycle(ctx, rx_ms, slp_ms,
+		LR20XX_RADIO_COMMON_RX_DUTY_CYCLE_MODE_RX);
+	LOG_INF("recv_duty_cycle: rx=%ums sleep=%ums", rx_ms, slp_ms);
+
+	lr20xx_system_clear_irq_status(ctx, LR20XX_SYSTEM_IRQ_ALL_MASK);
+	data->in_rx_mode = true;
+	data->tx_active = false;
+
+	k_mutex_unlock(&data->spi_mutex);
+	return 0;
 }
 
 /* ── Deferred hardware init ─────────────────────────────────────────── */
@@ -1285,6 +1497,7 @@ static int lr20xx_lora_init(const struct device *dev)
 	data->hw_initialized = false;
 
 	k_mutex_init(&data->spi_mutex);
+	k_sem_init(&data->cad_sem, 0, 1);
 	k_work_init(&data->dio1_work, lr20xx_dio1_work_handler);
 
 	k_work_queue_start(&data->dio1_wq, lr20xx_dio1_wq_stack,
@@ -1327,12 +1540,15 @@ static int lr20xx_lora_init(const struct device *dev)
 /* ── Device instantiation ───────────────────────────────────────────── */
 
 static DEVICE_API(lora, lr20xx_lora_api) = {
-	.config     = lr20xx_lora_config,
-	.airtime    = lr20xx_lora_airtime,
-	.send       = lr20xx_lora_send,
-	.send_async = lr20xx_lora_send_async,
-	.recv       = lr20xx_lora_recv,
-	.recv_async = lr20xx_lora_recv_async,
+	.config          = lr20xx_lora_config,
+	.airtime         = lr20xx_lora_airtime,
+	.send            = lr20xx_lora_send,
+	.send_async      = lr20xx_lora_send_async,
+	.recv            = lr20xx_lora_recv,
+	.recv_async      = lr20xx_lora_recv_async,
+	.cad             = lr20xx_lora_cad,
+	.cad_async       = lr20xx_lora_cad_async,
+	.recv_duty_cycle = lr20xx_lora_recv_duty_cycle,
 };
 
 #define LR20XX_INIT(n)                                                       \

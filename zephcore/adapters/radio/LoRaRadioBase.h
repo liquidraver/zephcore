@@ -83,9 +83,6 @@ protected:
 	/** Apply lora_modem_config + any chip-specific extras (image cal, etc.) */
 	virtual void hwConfigure(const struct lora_modem_config &cfg) = 0;
 
-	/** Start async receive (lora_recv_async + boost/duty-cycle setup) */
-	virtual void hwStartReceive() = 0;
-
 	/** Cancel current async receive */
 	virtual void hwCancelReceive() = 0;
 
@@ -101,9 +98,6 @@ protected:
 
 	/** Set RX LNA boost on/off */
 	virtual void hwSetRxBoost(bool enable) = 0;
-
-	/** Set RX duty cycle on/off (hardware level) */
-	virtual void hwSetRxDutyCycle(bool enable) = 0;
 
 	/** Reset AGC (chip-specific, may be no-op) */
 	virtual void hwResetAGC() = 0;
@@ -159,7 +153,7 @@ protected:
 	struct lora_modem_config _last_cfg;
 	bool _config_cached;
 
-	/* Static RX callback — passed to lora_recv_async() by subclass hwStartReceive() */
+	/* Static RX callback — passed to lora_recv_async() / lora_recv_duty_cycle() */
 	static void rxCallbackStatic(const struct device *dev, uint8_t *data,
 				     uint16_t size, int16_t rssi, int8_t snr,
 				     void *user_data);

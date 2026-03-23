@@ -41,21 +41,6 @@ void LR2021Radio::hwConfigure(const struct lora_modem_config &cfg)
 	}
 }
 
-void LR2021Radio::hwStartReceive()
-{
-	int ret = lora_recv_async(_dev, rxCallbackStatic, this);
-	if (ret < 0) {
-		LOG_ERR("lora_recv_async failed: %d", ret);
-		atomic_set(&_in_recv_mode, 0);
-		return;
-	}
-	atomic_set(&_in_recv_mode, 1);
-
-	if (_rx_duty_cycle_enabled) {
-		lr20xx_set_rx_duty_cycle(_dev, true);
-	}
-}
-
 void LR2021Radio::hwCancelReceive()
 {
 	lora_recv_async(_dev, NULL, NULL);
@@ -80,11 +65,6 @@ bool LR2021Radio::hwIsPreambleDetected()
 void LR2021Radio::hwSetRxBoost(bool enable)
 {
 	lr20xx_set_rx_boost(_dev, enable);
-}
-
-void LR2021Radio::hwSetRxDutyCycle(bool enable)
-{
-	lr20xx_set_rx_duty_cycle(_dev, enable);
 }
 
 void LR2021Radio::hwResetAGC()

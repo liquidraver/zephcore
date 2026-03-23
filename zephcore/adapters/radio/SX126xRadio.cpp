@@ -41,23 +41,6 @@ void SX126xRadio::hwConfigure(const struct lora_modem_config &cfg)
 	}
 }
 
-void SX126xRadio::hwStartReceive()
-{
-	int ret = lora_recv_async(_dev, rxCallbackStatic, this);
-	if (ret < 0) {
-		LOG_ERR("lora_recv_async failed: %d", ret);
-		atomic_set(&_in_recv_mode, 0);
-		return;
-	}
-	atomic_set(&_in_recv_mode, 1);
-
-	/* RX boost: set once via setRxBoost(), preserved by SX126x
-	 * hardware retention registers (DS §9.6). */
-	if (_rx_duty_cycle_enabled) {
-		sx126x_set_rx_duty_cycle(_dev, true);
-	}
-}
-
 void SX126xRadio::hwCancelReceive()
 {
 	lora_recv_async(_dev, NULL, NULL);
@@ -82,11 +65,6 @@ bool SX126xRadio::hwIsPreambleDetected()
 void SX126xRadio::hwSetRxBoost(bool enable)
 {
 	sx126x_set_rx_boost(_dev, enable);
-}
-
-void SX126xRadio::hwSetRxDutyCycle(bool enable)
-{
-	sx126x_set_rx_duty_cycle(_dev, enable);
 }
 
 void SX126xRadio::hwResetAGC()

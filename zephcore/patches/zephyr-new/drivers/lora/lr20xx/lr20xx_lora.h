@@ -38,17 +38,6 @@ int16_t lr20xx_get_rssi_inst(const struct device *dev);
 bool lr20xx_is_receiving(const struct device *dev);
 
 /**
- * @brief Enable/disable RX duty cycle mode
- *
- * When enabled, radio alternates between RX and sleep.
- * Takes effect on the next RX start.
- *
- * @param dev LoRa device
- * @param enable true to enable, false for continuous RX
- */
-void lr20xx_set_rx_duty_cycle(const struct device *dev, bool enable);
-
-/**
  * @brief Enable/disable RX boosted mode
  *
  * @param dev LoRa device

@@ -45,6 +45,24 @@ typedef void (*RadioTxDoneCallback)(void *user_data);
 
 /* --- Zephyr enum mapping utilities --- */
 
+/* Map Zephyr bandwidth enum to Hz */
+static inline uint32_t bandwidth_to_hz(enum lora_signal_bandwidth bw)
+{
+	switch (bw) {
+	case BW_7_KHZ:   return 7812;
+	case BW_10_KHZ:  return 10417;
+	case BW_15_KHZ:  return 15625;
+	case BW_20_KHZ:  return 20833;
+	case BW_31_KHZ:  return 31250;
+	case BW_41_KHZ:  return 41667;
+	case BW_62_KHZ:  return 62500;
+	case BW_125_KHZ: return 125000;
+	case BW_250_KHZ: return 250000;
+	case BW_500_KHZ: return 500000;
+	default:         return 125000;
+	}
+}
+
 /* Map kHz bandwidth value to Zephyr enum.
  * Input is (uint16_t)(float_bw) — truncated, e.g. 7.8→7, 10.4→10, 62.5→62.
  * Zephyr >=4.4 has narrow BWs (7-62 kHz); <=4.3 only has 125/250/500. */

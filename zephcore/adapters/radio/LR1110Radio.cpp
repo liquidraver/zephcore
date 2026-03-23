@@ -41,23 +41,6 @@ void LR1110Radio::hwConfigure(const struct lora_modem_config &cfg)
 	}
 }
 
-void LR1110Radio::hwStartReceive()
-{
-	int ret = lora_recv_async(_dev, rxCallbackStatic, this);
-	if (ret < 0) {
-		LOG_ERR("lora_recv_async failed: %d", ret);
-		atomic_set(&_in_recv_mode, 0);
-		return;
-	}
-	atomic_set(&_in_recv_mode, 1);
-
-	/* RX boost: set once via setRxBoost(), LR1110 SetRxBoosted
-	 * command persists through SetRx calls. */
-	if (_rx_duty_cycle_enabled) {
-		lr11xx_set_rx_duty_cycle(_dev, true);
-	}
-}
-
 void LR1110Radio::hwCancelReceive()
 {
 	lora_recv_async(_dev, NULL, NULL);
@@ -82,11 +65,6 @@ bool LR1110Radio::hwIsPreambleDetected()
 void LR1110Radio::hwSetRxBoost(bool enable)
 {
 	lr11xx_set_rx_boost(_dev, enable);
-}
-
-void LR1110Radio::hwSetRxDutyCycle(bool enable)
-{
-	lr11xx_set_rx_duty_cycle(_dev, enable);
 }
 
 void LR1110Radio::hwResetAGC()

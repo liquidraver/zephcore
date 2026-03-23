@@ -21,14 +21,12 @@ public:
 protected:
 	/* Hardware primitives */
 	void hwConfigure(const struct lora_modem_config &cfg) override;
-	void hwStartReceive() override;
 	void hwCancelReceive() override;
 	int hwSendAsync(uint8_t *buf, uint32_t len,
 			struct k_poll_signal *sig) override;
 	int16_t hwGetCurrentRSSI() override;
 	bool hwIsPreambleDetected() override;
 	void hwSetRxBoost(bool enable) override;
-	void hwSetRxDutyCycle(bool enable) override;
 	void hwResetAGC() override;
 };
 
