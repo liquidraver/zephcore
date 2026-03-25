@@ -213,7 +213,9 @@ static void render_work_handler(struct k_work *work)
 	}
 
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-	if (mc_display_is_on() && !splash_active) {
+	/* EPD: render even when backlight is off — content is always visible.
+	 * OLED: only render when display is on (screen is black when off). */
+	if ((mc_display_is_on() || mc_display_is_epd()) && !splash_active) {
 		ui_pages_render();
 	}
 #endif
@@ -955,11 +957,33 @@ void ui_set_msg_count(uint16_t count)
 {
 	struct ui_state *s = get_state();
 
+	if (s->msg_count == count) {
+		return;
+	}
+
 	s->msg_count = count;
 
-	if (ui_initialized) {
+	if (!ui_initialized) {
+		return;
+	}
+
+	/* Always render when the display is already on (user is looking). */
+#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
+	if (mc_display_is_on()) {
+		schedule_render();
+		return;
+	}
+#endif
+
+	/* EPD is bistable and readable without backlight. If the user is parked
+	 * on the messages page, update the count silently via partial refresh
+	 * without waking the backlight. Any other page: leave it for the next
+	 * button press to avoid a pointless flash. */
+#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
+	if (mc_display_is_epd() && ui_pages_current() == UI_PAGE_MESSAGES) {
 		schedule_render();
 	}
+#endif
 }
 
 void ui_set_ble_status(bool connected, const char *name)

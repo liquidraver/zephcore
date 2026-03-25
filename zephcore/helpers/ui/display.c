@@ -212,13 +212,14 @@ int mc_display_init(void)
 	/* Clear CPU-side framebuffer (zeroes the RAM buffer — no SPI transfer). */
 	cfb_framebuffer_clear(disp_dev, false);
 
-	/* OLED: push the blank frame to hardware and unblank.
-	 * EPD: skip — the first ui_pages_render() will push real content via
-	 * partial refresh (fast, no visible flash). */
+	/* Unblank the display so the driver uses partial refresh for all
+	 * subsequent renders (ssd16xx: partial_refresh = !blanking_on).
+	 * OLED: also push a blank frame first to clear stale VRAM.
+	 * EPD: skip the frame push — partial refresh will write real content. */
 	if (!is_epd) {
 		cfb_framebuffer_finalize(disp_dev);
-		display_blanking_off(disp_dev);
 	}
+	display_blanking_off(disp_dev);
 	backlight_set(true);
 	disp_on = true;
 	disp_initialized = true;
